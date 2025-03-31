@@ -5,10 +5,11 @@ import (
 	"crypto/rand"
 	"database/sql" // Added for sql.ErrNoRows
 	"encoding/base64"
-	"errors" // Import the standard errors package
-	"fmt"    // Added for error formatting
-	"io"     // Added for file operations
-	"log"    // Added for logging errors
+	"encoding/json" // Added for activity log details
+	"errors"        // Import the standard errors package
+	"fmt"           // Added for error formatting
+	"io"            // Added for file operations
+	"log"           // Added for logging errors
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -73,6 +74,37 @@ func NewHandler(oauth *oauth2.Config, store string, db *db.DB, gemini *gemini.Cl
 		Gemini:      gemini,
 		Youtube:     youtube.New(),
 		// R2Client:    nil, // R2 client removed
+	}
+}
+
+// logActivity is a helper function to create activity log entries.
+func (h *Handler) logActivity(ctx context.Context, userID uuid.UUID, action db.ActivityAction, targetType db.NullActivityTargetType, targetID pgtype.UUID, details map[string]interface{}) {
+	var detailsJSON []byte
+	var err error
+
+	if details != nil {
+		detailsJSON, err = json.Marshal(details)
+		if err != nil {
+			log.Printf("ERROR: Failed to marshal activity log details for user %s, action %s: %v", userID, action, err)
+			// Decide if you want to log without details or skip logging
+			detailsJSON = nil // Log without details on marshal error
+		}
+	}
+
+	logParams := db.CreateActivityLogParams{
+		UserID:     pgtype.UUID{Bytes: userID, Valid: true},
+		Action:     action,
+		TargetType: targetType,
+		TargetID:   targetID,
+		Details:    detailsJSON,
+	}
+
+	_, err = h.DB.Queries.CreateActivityLog(ctx, logParams)
+	if err != nil {
+		// Log the error but don't block the main request flow
+		log.Printf("ERROR: Failed to create activity log for user %s, action %s: %v", userID, action, err)
+	} else {
+		log.Printf("INFO: Activity logged for user %s: %s", userID, action)
 	}
 }
 
@@ -165,6 +197,13 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 				return
 			}
 			log.Printf("INFO: Created user with ID %s for email %s", dbUser.ID, dbUser.Email) // Changed %d to %s for UUID
+
+			// Log signup activity
+			h.logActivity(ctx, dbUser.ID, db.ActivityActionLogin, // Assuming signup implies login
+				db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeUser, Valid: true},
+				pgtype.UUID{Bytes: dbUser.ID, Valid: true},
+				map[string]interface{}{"email": dbUser.Email, "signup": true}) // Add signup flag
+
 		} else {
 			// Other database error
 			log.Printf("ERROR: Failed to get user by email: %v", err)
@@ -175,6 +214,13 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 		// User exists, potentially update? (Optional)
 		// For now, just log that the user was found.
 		log.Printf("INFO: Found existing user with ID %s for email %s", dbUser.ID, dbUser.Email) // Changed %d to %s for UUID
+
+		// Log login activity for existing user
+		h.logActivity(ctx, dbUser.ID, db.ActivityActionLogin,
+			db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeUser, Valid: true},
+			pgtype.UUID{Bytes: dbUser.ID, Valid: true},
+			map[string]interface{}{"email": dbUser.Email, "signup": false}) // No signup flag
+
 		// Example update (if you have an UpdateUser method and want to refresh data):
 		/*
 			// Corrected commented UpdateUserParams based on db/users.sql.go
@@ -248,21 +294,42 @@ func (h *Handler) HandleUserProfile(c *gin.Context) {
 // HandleLogout: Clears the session.
 func (h *Handler) HandleLogout(c *gin.Context) {
 	session := sessions.Default(c)
+	// Get user profile *before* clearing the session to log the correct user ID
+	profileData := session.Get(profileSessionKey)
+	profile, ok := profileData.(UserProfile)
+	userID := uuid.Nil // Default to Nil UUID if not found
+
+	if ok && profileData != nil {
+		userID = profile.DatabaseID
+		log.Printf("INFO: Logging out user %s (ID: %s)", profile.Email, userID)
+	} else {
+		log.Printf("WARN: Could not retrieve user profile from session during logout.")
+		// Proceed with logout anyway, but maybe log with nil user ID?
+	}
+
 	session.Clear()
 	session.Options(sessions.Options{MaxAge: -1})
 
 	err := session.Save()
 	if err != nil {
-		// Log the error but still attempt to redirect
-		log.Printf("ERROR: Failed to save session during logout: %v", err)
-		// Still attempt redirect, but maybe return an error status if critical
+		// Log the error but still attempt to respond
+		log.Printf("ERROR: Failed to save session during logout for user %s: %v", userID, err)
+		// Consider returning an error if session saving is critical
 		// c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear session"})
 		// return
 	}
 
+	// Log logout activity if user ID was found
+	if userID != uuid.Nil {
+		h.logActivity(c.Request.Context(), userID, db.ActivityActionLogout,
+			db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeUser, Valid: true},
+			pgtype.UUID{Bytes: userID, Valid: true},
+			nil) // No specific details needed for logout
+	}
+
 	// Instead of redirecting, send a success response.
 	// The frontend will handle UI updates/reload based on this success.
-	log.Printf("User session cleared successfully.")
+	log.Printf("User session cleared successfully for user ID: %s", userID)
 	c.Status(http.StatusOK) // Or http.StatusNoContent
 }
 
@@ -686,6 +753,16 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 
 	log.Printf("INFO: Successfully created quiz %s with %d questions for user %s", createdQuiz.ID, len(geminiResponse.Questions), userID)
 
+	// Log quiz creation activity
+	h.logActivity(ctx, userID, db.ActivityActionQuizCreate,
+		db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeQuiz, Valid: true},
+		pgtype.UUID{Bytes: createdQuiz.ID, Valid: true},
+		map[string]interface{}{
+			"title":          createdQuiz.Title,
+			"question_count": len(geminiResponse.Questions),
+			"material_count": processedMaterialCount,
+		})
+
 	// 7. Return Response
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Quiz generated successfully!",
@@ -922,6 +999,12 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 
 	log.Printf("INFO: Successfully deleted quiz %s by user %s", quizID, userID)
 
+	// Log quiz deletion activity
+	h.logActivity(ctx, userID, db.ActivityActionQuizDelete,
+		db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeQuiz, Valid: true},
+		pgtype.UUID{Bytes: quizID, Valid: true},
+		map[string]interface{}{"title": dbQuiz.Title}) // Include title from the fetched quiz
+
 	// 5. Return Success Response
 	c.Status(http.StatusNoContent) // 204 No Content is standard for successful DELETE
 }
@@ -982,6 +1065,12 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 	}
 
 	log.Printf("INFO: Created quiz attempt %s for quiz %s, user %s", newAttempt.ID, quizID, userID)
+
+	// Log attempt start activity
+	h.logActivity(ctx, userID, db.ActivityActionQuizAttemptStart,
+		db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeQuizAttempt, Valid: true},
+		pgtype.UUID{Bytes: newAttempt.ID, Valid: true},
+		map[string]interface{}{"quiz_id": quizID.String()})
 
 	// 5. Return the new attempt ID
 	c.JSON(http.StatusCreated, gin.H{"attemptId": newAttempt.ID.String()})
@@ -1263,6 +1352,15 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 	}
 
 	log.Printf("INFO: Successfully finished attempt %s for user %s with score %d", attemptID, userID, updatedAttempt.Score.Int32)
+
+	// Log attempt finish activity
+	h.logActivity(ctx, userID, db.ActivityActionQuizAttemptFinish,
+		db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeQuizAttempt, Valid: true},
+		pgtype.UUID{Bytes: updatedAttempt.ID, Valid: true},
+		map[string]interface{}{
+			"quiz_id": updatedAttempt.QuizID.String(),
+			"score":   updatedAttempt.Score.Int32,
+		})
 
 	// 6. Return Success Response (e.g., the final score)
 	c.JSON(http.StatusOK, gin.H{
