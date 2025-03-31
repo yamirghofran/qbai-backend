@@ -22,7 +22,7 @@ func CORSMiddleware() gin.HandlerFunc {
 			// but in production, it should likely be a fatal error if not set.
 			// Using "*" here would defeat the purpose of the fix.
 			// Let's fallback to the typical Vite dev server URL for now.
-			frontendURL = "http://localhost:5173" // Or log fatal
+			frontendURL = "https://quizbuilder.ai" // Or log fatal
 		}
 		// Trim trailing slash if present before setting the header
 		c.Writer.Header().Set("Access-Control-Allow-Origin", strings.TrimSuffix(frontendURL, "/"))
