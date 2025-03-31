@@ -1,0 +1,30 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries:
+    - "sql/queries/users.sql"
+    - "sql/queries/quizes.sql"
+    - "sql/queries/materials.sql"
+    - "sql/queries/topics.sql"
+    - "sql/queries/questions.sql"
+    - "sql/queries/answers.sql"
+    - "sql/queries/quiz_attempts.sql"
+    - "sql/queries/quiz_topics.sql"
+    - "sql/queries/quiz_materials.sql"
+    - "sql/queries/attempt_answers.sql"
+    - "sql/queries/activity_logs.sql"
+    - "sql/queries/tokens.sql"
+    schema: "sql/migrations/"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
+        emit_empty_slices: true
+        overrides:
+          - db_type: "uuid"
+            go_type: "github.com/google/uuid.UUID"
+          - db_type: "timestamptz"
+            go_type: "time.Time"
