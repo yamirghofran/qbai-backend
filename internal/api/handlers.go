@@ -353,21 +353,44 @@ func (h *Handler) HandleUserProfile(c *gin.Context) {
 // HandleLogout: Clears the session.
 func (h *Handler) HandleLogout(c *gin.Context) {
 	session := sessions.Default(c)
-	// Get user profile *before* clearing the session to log the correct user ID
-	profileData := session.Get(profileSessionKey)
-	profile, ok := profileData.(UserProfile)
+	// Get user profile from CONTEXT *before* clearing the session to log the correct user ID
 	userID := uuid.Nil // Default to Nil UUID if not found
 	userName := "Unknown User"
 	userEmail := ""
+	userProfileValue, profileExists := c.Get("userProfile") // Use context key
 
-	if ok && profileData != nil {
-		userID = profile.DatabaseID
-		userName = profile.Name
-		userEmail = profile.Email
-		log.Printf("INFO: Logging out user %s (ID: %s)", profile.Email, userID)
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile)
+		if profileOk {
+			userID = profile.DatabaseID
+			userName = profile.Name
+			userEmail = profile.Email
+			// Ensure name isn't empty
+			if userName == "" {
+				userName = "User"
+			}
+			log.Printf("INFO: Logging out user %s (ID: %s)", profile.Email, userID)
+		} else {
+			log.Printf("ERROR: Value found for key 'userProfile' in context is not UserProfile during logout. Type: %T", userProfileValue)
+			// Attempt to get userID from context directly if profile assertion failed
+			userIDValueCtx, idExists := c.Get("userID")
+			if idExists {
+				if id, idOk := userIDValueCtx.(uuid.UUID); idOk {
+					userID = id
+					log.Printf("WARN: Using userID %s directly from context for logout logging.", userID)
+				}
+			}
+		}
 	} else {
-		log.Printf("WARN: Could not retrieve user profile from session during logout.")
-		// Proceed with logout anyway, but maybe log with nil user ID?
+		log.Printf("WARN: User profile key 'userProfile' not found in context during logout.")
+		// Attempt to get userID from context directly if profile key missing
+		userIDValueCtx, idExists := c.Get("userID")
+		if idExists {
+			if id, idOk := userIDValueCtx.(uuid.UUID); idOk {
+				userID = id
+				log.Printf("WARN: Using userID %s directly from context for logout logging.", userID)
+			}
+		}
 	}
 
 	session.Clear()
@@ -436,14 +459,31 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	log.Printf("INFO: Handling quiz generation request for user ID: %s", userID)
 
 	// Get user details for notifications
-	userProfile, _ := c.Get(profileSessionKey) // Ignore error, profile might not be fully populated here
-	profile, _ := userProfile.(UserProfile)
-	userName := profile.Name
-	userEmail := profile.Email
-	if userName == "" {
-		userName = "Unknown User"
-	}
+	userName := "Unknown User"                              // Default value
+	userEmail := ""                                         // Default value
+	userProfileValue, profileExists := c.Get("userProfile") // Use the key set by middleware
 
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile) // Check type assertion
+		if profileOk {
+			// Successfully retrieved and asserted profile
+			userName = profile.Name
+			userEmail = profile.Email
+			// Ensure name isn't empty, fallback if needed
+			if userName == "" {
+				userName = "User" // Use a slightly better default if name is empty but profile exists
+			}
+			log.Printf("INFO: Retrieved user profile from context for notification: Name=%s, Email=%s", userName, userEmail)
+		} else {
+			// Profile key exists, but type assertion failed
+			log.Printf("ERROR: Value found for key '%s' in context is not of type UserProfile. Type: %T. UserID: %s", "userProfile", userProfileValue, userID)
+			// userName and userEmail will keep their default values ("Unknown User", "")
+		}
+	} else {
+		// Profile key does not exist in context
+		log.Printf("ERROR: User profile key '%s' not found in context for quiz generation notification. UserID: %s", "userProfile", userID)
+		// userName and userEmail will keep their default values ("Unknown User", "")
+	}
 	// 2. Parse Multipart Form Data
 	// Set a reasonable limit (e.g., 64 MB) for memory storage of parts
 	// Adjust this based on expected file sizes and server resources
@@ -1076,12 +1116,24 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 	}
 
 	// Get user details for notifications
-	userProfile, _ := c.Get(profileSessionKey) // Ignore error
-	profile, _ := userProfile.(UserProfile)
-	userName := profile.Name
-	userEmail := profile.Email
-	if userName == "" {
-		userName = "Unknown User"
+	userName := "Unknown User"                              // Default value
+	userEmail := ""                                         // Default value
+	userProfileValue, profileExists := c.Get("userProfile") // Use context key
+
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile)
+		if profileOk {
+			userName = profile.Name
+			userEmail = profile.Email
+			if userName == "" {
+				userName = "User"
+			}
+			log.Printf("INFO: Retrieved user profile from context for delete notification: Name=%s, Email=%s", userName, userEmail)
+		} else {
+			log.Printf("ERROR: Value found for key 'userProfile' in context is not UserProfile during delete. Type: %T. UserID: %s", userProfileValue, userID)
+		}
+	} else {
+		log.Printf("ERROR: User profile key 'userProfile' not found in context for delete notification. UserID: %s", userID)
 	}
 
 	// 2. Parse Quiz ID
@@ -1158,12 +1210,30 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 	}
 
 	// Get user details for notifications
-	userProfile, _ := c.Get(profileSessionKey) // Ignore error
-	profile, _ := userProfile.(UserProfile)
-	userName := profile.Name
-	userEmail := profile.Email
-	if userName == "" {
-		userName = "Unknown User"
+	userName := "Unknown User"                              // Default value
+	userEmail := ""                                         // Default value
+	userProfileValue, profileExists := c.Get("userProfile") // Use the key set by middleware
+
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile) // Check type assertion
+		if profileOk {
+			// Successfully retrieved and asserted profile
+			userName = profile.Name
+			userEmail = profile.Email
+			// Ensure name isn't empty, fallback if needed
+			if userName == "" {
+				userName = "User" // Use a slightly better default if name is empty but profile exists
+			}
+			log.Printf("INFO: Retrieved user profile from context for attempt start notification: Name=%s, Email=%s", userName, userEmail)
+		} else {
+			// Profile key exists, but type assertion failed
+			log.Printf("ERROR: Value found for key '%s' in context is not of type UserProfile during attempt start. Type: %T. UserID: %s", "userProfile", userProfileValue, userID)
+			// userName and userEmail will keep their default values ("Unknown User", "")
+		}
+	} else {
+		// Profile key does not exist in context
+		log.Printf("ERROR: User profile key '%s' not found in context for attempt start notification. UserID: %s", "userProfile", userID)
+		// userName and userEmail will keep their default values ("Unknown User", "")
 	}
 
 	// 2. Parse Quiz ID
@@ -1437,12 +1507,24 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 	}
 
 	// Get user details for notifications
-	userProfile, _ := c.Get(profileSessionKey) // Ignore error
-	profile, _ := userProfile.(UserProfile)
-	userName := profile.Name
-	userEmail := profile.Email
-	if userName == "" {
-		userName = "Unknown User"
+	userName := "Unknown User"                              // Default value
+	userEmail := ""                                         // Default value
+	userProfileValue, profileExists := c.Get("userProfile") // Use context key
+
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile)
+		if profileOk {
+			userName = profile.Name
+			userEmail = profile.Email
+			if userName == "" {
+				userName = "User"
+			}
+			log.Printf("INFO: Retrieved user profile from context for finish notification: Name=%s, Email=%s", userName, userEmail)
+		} else {
+			log.Printf("ERROR: Value found for key 'userProfile' in context is not UserProfile during finish. Type: %T. UserID: %s", userProfileValue, userID)
+		}
+	} else {
+		log.Printf("ERROR: User profile key 'userProfile' not found in context for finish notification. UserID: %s", userID)
 	}
 
 	// 2. Parse Attempt ID
