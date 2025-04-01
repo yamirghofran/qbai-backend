@@ -25,7 +25,7 @@ import (
 )
 
 // QuizPrompt is the prompt used to generate quizzes
-const QuizPrompt = `Generate a comprehensive multiple-choice quiz of 25-50 questions based on the content of these documents. Follow these requirements exactly:
+const QuizPrompt = `Generate a comprehensive multiple-choice quiz based on the content of these documents. Follow these requirements exactly:
 
 1. Create a descriptive title for the quiz that accurately reflects the main subject matter of the documents
 2. Create questions covering ALL main topics and subtopics in the documents, ensuring no significant concept is omitted. Include the topic for each question (so that questions can be grouped by topic later.)
