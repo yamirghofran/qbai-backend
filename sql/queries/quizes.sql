@@ -7,8 +7,23 @@ INSERT INTO quizes (
 RETURNING *;
 
 -- name: GetQuizByID :one
-SELECT * FROM quizes
-WHERE id = $1 LIMIT 1;
+SELECT
+    q.id,
+    q.creator_id,
+    q.title,
+    q.description,
+    q.visibility,
+    q.created_at,
+    q.updated_at,
+    u.name AS creator_name,
+    u.picture AS creator_picture
+FROM
+    quizes q
+JOIN
+    users u ON q.creator_id = u.id
+WHERE
+    q.id = $1
+LIMIT 1;
 
 -- name: ListQuizes :many
 SELECT * FROM quizes

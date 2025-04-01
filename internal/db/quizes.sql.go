@@ -60,13 +60,40 @@ func (q *Queries) DeleteQuiz(ctx context.Context, id uuid.UUID) error {
 }
 
 const getQuizByID = `-- name: GetQuizByID :one
-SELECT id, creator_id, title, description, visibility, created_at, updated_at FROM quizes
-WHERE id = $1 LIMIT 1
+SELECT
+    q.id,
+    q.creator_id,
+    q.title,
+    q.description,
+    q.visibility,
+    q.created_at,
+    q.updated_at,
+    u.name AS creator_name,
+    u.picture AS creator_picture
+FROM
+    quizes q
+JOIN
+    users u ON q.creator_id = u.id
+WHERE
+    q.id = $1
+LIMIT 1
 `
 
-func (q *Queries) GetQuizByID(ctx context.Context, id uuid.UUID) (Quize, error) {
+type GetQuizByIDRow struct {
+	ID             uuid.UUID      `json:"id"`
+	CreatorID      pgtype.UUID    `json:"creator_id"`
+	Title          string         `json:"title"`
+	Description    pgtype.Text    `json:"description"`
+	Visibility     QuizVisibility `json:"visibility"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	CreatorName    pgtype.Text    `json:"creator_name"`
+	CreatorPicture pgtype.Text    `json:"creator_picture"`
+}
+
+func (q *Queries) GetQuizByID(ctx context.Context, id uuid.UUID) (GetQuizByIDRow, error) {
 	row := q.db.QueryRow(ctx, getQuizByID, id)
-	var i Quize
+	var i GetQuizByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.CreatorID,
@@ -75,6 +102,8 @@ func (q *Queries) GetQuizByID(ctx context.Context, id uuid.UUID) (Quize, error) 
 		&i.Visibility,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.CreatorName,
+		&i.CreatorPicture,
 	)
 	return i, err
 }
