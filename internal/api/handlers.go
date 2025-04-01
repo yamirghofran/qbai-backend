@@ -578,6 +578,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	// 4. Process Video URLs
 	videoURLs := c.Request.MultipartForm.Value["videoUrls"] // Key matches frontend FormData
 	log.Printf("INFO: Received %d video URLs for processing", len(videoURLs))
+	log.Printf("DEBUG: Video URLs received: %v", videoURLs) // Log the actual URLs received
 
 	for _, url := range videoURLs {
 		if url == "" {
@@ -587,12 +588,14 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		log.Printf("INFO: Processing video URL: %s", url)
 
 		// Fetch transcript (pass empty string for default language)
+		log.Printf("DEBUG: Calling GetTranscript for URL: %s", url)
 		transcript, err := h.Youtube.GetTranscript(url, "") // Corrected: Removed ctx
 		if err != nil {
 			// Log error but continue processing other URLs/files? Or abort?
 			// For now, let's log and continue, but return an error later if *no* content was processed.
 			log.Printf("WARN: Failed to get transcript for URL %s: %v. Skipping this URL.", url, err)
 			// Optionally: Add this error to a list to return to the user later
+			log.Printf("DEBUG: Skipping URL %s due to GetTranscript error: %v", url, err)
 			continue
 		}
 
@@ -600,6 +603,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			log.Printf("WARN: Skipping URL %s as transcript was empty.", url)
 			continue
 		}
+		log.Printf("DEBUG: Successfully fetched transcript for URL %s (length: %d)", url, len(transcript))
+		// Removed extra closing brace from here
 
 		// Save transcript to temporary file
 		transcriptFilename := fmt.Sprintf("transcript_%s.txt", uuid.New().String()) // Unique temp name
@@ -630,7 +635,9 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			Path: tempPath,
 			Size: fileInfo.Size(),
 		})
-	}
+		log.Printf("DEBUG: Added transcript from URL %s as document file: %s", url, transcriptFilename)
+
+	} // <-- Moved this closing brace after the log message
 
 	// Check if any content was processed
 	if len(documentFiles) == 0 {

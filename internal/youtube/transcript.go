@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -73,6 +74,8 @@ func (yt *YoutubeTranscript) fetchTranscript(videoId string, lang string) ([]Tra
 
 	splittedHTML := strings.Split(string(videoPageBody), `"captions":`)
 	if len(splittedHTML) <= 1 {
+		// Log the HTML around where captions were expected
+		log.Printf("DEBUG: Could not find '\"captions\":' marker in video page HTML for video %s. HTML snippet near expected location: %s", videoId, getHTMLSnippet(string(videoPageBody), `"captions":`))
 		return nil, "", fmt.Errorf("no captions available for video %s", videoId)
 	}
 
@@ -92,6 +95,8 @@ func (yt *YoutubeTranscript) fetchTranscript(videoId string, lang string) ([]Tra
 	}
 
 	if len(captions.PlayerCaptionsTracklistRenderer.CaptionTracks) == 0 {
+		// Log the parsed captions data if tracks are missing
+		log.Printf("DEBUG: Parsed captions data for video %s, but CaptionTracks array is empty. Captions JSON: %s", videoId, captionsData)
 		return nil, "", fmt.Errorf("no transcripts available for video %s", videoId)
 	}
 
@@ -148,4 +153,26 @@ func retrieveVideoId(url string) (string, error) {
 		return match[1], nil
 	}
 	return "", fmt.Errorf("invalid YouTube URL or video ID")
+}
+
+// Helper function to get a snippet of HTML around a search term
+func getHTMLSnippet(htmlContent string, searchTerm string) string {
+	index := strings.Index(htmlContent, searchTerm)
+	start := 0
+	if index > 200 {
+		start = index - 200
+	}
+	end := len(htmlContent)
+	if index != -1 && index+len(searchTerm)+200 < len(htmlContent) {
+		end = index + len(searchTerm) + 200
+	} else if index == -1 && 400 < len(htmlContent) {
+		// If term not found, show beginning
+		end = 400
+	}
+
+	snippet := htmlContent[start:end]
+	if index == -1 {
+		return fmt.Sprintf("[Search term '%s' not found] Start of HTML: %s...", searchTerm, snippet)
+	}
+	return fmt.Sprintf("...HTML around '%s': %s...", searchTerm, snippet)
 }
