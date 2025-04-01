@@ -526,13 +526,17 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 
 	// 5. Call Gemini to generate the quiz
 	log.Printf("INFO: Calling Gemini to process %d documents for user %s", len(documentFiles), userID)
-	geminiResponse, err := h.Gemini.ProcessDocuments(ctx, documentFiles)
+	// Receive token counts from ProcessDocuments
+	geminiResponse, promptTokens, candidateTokens, totalTokens, err := h.Gemini.ProcessDocuments(ctx, documentFiles)
 	if err != nil {
 		log.Printf("ERROR: Gemini processing failed for user %s: %v", userID, err)
 		// Consider more specific error mapping if Gemini provides codes/types
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to generate quiz content: %v", err)})
 		return
 	}
+
+	// Log received token counts (even if quiz generation failed partially)
+	log.Printf("INFO: Gemini Token Usage Reported: User=%s, Prompt=%d, Candidates=%d, Total=%d", userID, promptTokens, candidateTokens, totalTokens)
 
 	if geminiResponse == nil || len(geminiResponse.Questions) == 0 {
 		log.Printf("ERROR: Gemini returned no questions for user %s", userID)
@@ -556,6 +560,35 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	defer tx.Rollback(ctx) // Rollback is ignored if Commit() succeeds
 
 	qtx := h.DB.Queries.WithTx(tx)
+
+	// --- Token Transaction and Balance Update (Inside Transaction) ---
+	// Create token usage record (negative amount for consumption)
+	if totalTokens > 0 { // Only record if tokens were used
+		_, tokenErr := qtx.CreateTokenTransaction(ctx, db.CreateTokenTransactionParams{
+			UserID: userID,
+			Amount: -totalTokens, // Use negative value for usage
+			// Type is automatically set to 'usage' by the query
+		})
+		if tokenErr != nil {
+			log.Printf("ERROR: Failed to create token transaction record for user %s: %v", userID, tokenErr)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to record token usage"})
+			return // Rollback happens via defer
+		}
+
+		// Update user's token balance
+		_, balanceErr := qtx.UpdateUserTokenBalance(ctx, db.UpdateUserTokenBalanceParams{
+			ID:                  userID,
+			InputTokensBalance:  promptTokens,    // Amount to decrement input balance by
+			OutputTokensBalance: candidateTokens, // Amount to decrement output balance by
+		})
+		if balanceErr != nil {
+			log.Printf("ERROR: Failed to update token balance for user %s: %v", userID, balanceErr)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to update token balance"})
+			return // Rollback happens via defer
+		}
+		log.Printf("INFO: Recorded token usage and updated balance for user %s: Prompt=%d, Candidates=%d, Total=%d", userID, promptTokens, candidateTokens, totalTokens)
+	}
+	// --- End Token Transaction ---
 
 	// Create the main Quiz record
 	quizParams := db.CreateQuizParams{
@@ -758,10 +791,13 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeQuiz, Valid: true},
 		pgtype.UUID{Bytes: createdQuiz.ID, Valid: true},
 		map[string]interface{}{
-			"title":          createdQuiz.Title,
-			"question_count": len(geminiResponse.Questions),
-			"material_count": processedMaterialCount,
-		})
+			"title":            createdQuiz.Title,
+			"question_count":   len(geminiResponse.Questions),
+			"material_count":   processedMaterialCount,
+			"prompt_tokens":    promptTokens,    // Add token info
+			"candidate_tokens": candidateTokens, // Add token info
+			"total_tokens":     totalTokens,     // Add token info
+		}) // Add token details to the log
 
 	// 7. Return Response
 	c.JSON(http.StatusOK, gin.H{

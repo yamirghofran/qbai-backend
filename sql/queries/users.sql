@@ -34,3 +34,11 @@ RETURNING *;
 -- name: DeleteUser :exec
 DELETE FROM users
 WHERE id = $1;
+
+-- name: UpdateUserTokenBalance :one
+UPDATE users
+SET
+    input_tokens_balance = input_tokens_balance - $2,
+    output_tokens_balance = output_tokens_balance - $3
+WHERE id = $1
+RETURNING *;

@@ -21,6 +21,7 @@ type Querier interface {
 	CreateQuiz(ctx context.Context, arg CreateQuizParams) (Quize, error)
 	CreateQuizAttempt(ctx context.Context, arg CreateQuizAttemptParams) (QuizAttempt, error)
 	CreateToken(ctx context.Context, arg CreateTokenParams) (Token, error)
+	CreateTokenTransaction(ctx context.Context, arg CreateTokenTransactionParams) (Token, error)
 	CreateTopic(ctx context.Context, arg CreateTopicParams) (Topic, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	// Use with caution, logs are often meant to be kept
@@ -105,6 +106,7 @@ type Querier interface {
 	UpdateTopic(ctx context.Context, arg UpdateTopicParams) (Topic, error)
 	// Or any other order
 	UpdateUser(ctx context.Context, arg UpdateUserParams) (User, error)
+	UpdateUserTokenBalance(ctx context.Context, arg UpdateUserTokenBalanceParams) (User, error)
 	UpsertAttemptAnswer(ctx context.Context, arg UpsertAttemptAnswerParams) (AttemptAnswer, error)
 }
 

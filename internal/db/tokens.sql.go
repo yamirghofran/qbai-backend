@@ -40,6 +40,34 @@ func (q *Queries) CreateToken(ctx context.Context, arg CreateTokenParams) (Token
 	return i, err
 }
 
+const createTokenTransaction = `-- name: CreateTokenTransaction :one
+INSERT INTO tokens (
+    user_id, amount, type
+) VALUES (
+    $1, $2, 'usage' -- Amount should be negative for usage
+)
+RETURNING id, user_id, amount, type, created_at, updated_at
+`
+
+type CreateTokenTransactionParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Amount int32     `json:"amount"`
+}
+
+func (q *Queries) CreateTokenTransaction(ctx context.Context, arg CreateTokenTransactionParams) (Token, error) {
+	row := q.db.QueryRow(ctx, createTokenTransaction, arg.UserID, arg.Amount)
+	var i Token
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Amount,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const deleteToken = `-- name: DeleteToken :exec
 DELETE FROM tokens
 WHERE id = $1
