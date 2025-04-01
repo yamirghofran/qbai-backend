@@ -1,11 +1,13 @@
 package api
 
 import (
+	"quizbuilderai/internal/api/handlers" // Import the new handlers package
+
 	"github.com/gin-gonic/gin"
 )
 
 // SetupRoutes sets up the API routes
-func SetupRoutes(router *gin.Engine, handler *Handler) {
+func SetupRoutes(router *gin.Engine, handler *handlers.Handler) { // Update handler type
 	// Apply CORS middleware
 	router.Use(CORSMiddleware())
 
