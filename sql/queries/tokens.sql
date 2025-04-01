@@ -31,3 +31,10 @@ RETURNING *;
 -- name: DeleteToken :exec
 DELETE FROM tokens
 WHERE id = $1;
+-- name: CreateTokenTransaction :one
+INSERT INTO tokens (
+    user_id, amount, type
+) VALUES (
+    $1, $2, 'usage' -- Amount should be negative for usage
+)
+RETURNING *;

@@ -201,3 +201,35 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 	)
 	return i, err
 }
+
+const updateUserTokenBalance = `-- name: UpdateUserTokenBalance :one
+UPDATE users
+SET
+    input_tokens_balance = input_tokens_balance - $2,
+    output_tokens_balance = output_tokens_balance - $3
+WHERE id = $1
+RETURNING id, google_id, email, name, picture, input_tokens_balance, output_tokens_balance, created_at, updated_at
+`
+
+type UpdateUserTokenBalanceParams struct {
+	ID                  uuid.UUID `json:"id"`
+	InputTokensBalance  int32     `json:"input_tokens_balance"`
+	OutputTokensBalance int32     `json:"output_tokens_balance"`
+}
+
+func (q *Queries) UpdateUserTokenBalance(ctx context.Context, arg UpdateUserTokenBalanceParams) (User, error) {
+	row := q.db.QueryRow(ctx, updateUserTokenBalance, arg.ID, arg.InputTokensBalance, arg.OutputTokensBalance)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.GoogleID,
+		&i.Email,
+		&i.Name,
+		&i.Picture,
+		&i.InputTokensBalance,
+		&i.OutputTokensBalance,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
