@@ -1,19 +1,20 @@
 package api
 
 import (
+	"bytes" // Added for Discord notification payload
 	"context"
 	"crypto/rand"
 	"database/sql" // Added for sql.ErrNoRows
 	"encoding/base64"
-	"encoding/json" // Added for activity log details
+	"encoding/json" // Added for activity log details &amp; Discord payload
 	"errors"        // Import the standard errors package
 	"fmt"           // Added for error formatting
 	"io"            // Added for file operations
 	"log"           // Added for logging errors
 	"mime/multipart"
-	"net/http"
+	"net/http" // Added for Discord notification
 	"os"
-	"time" // Added for response struct timestamps
+	"time" // Added for response struct timestamps &amp; Discord timeout
 
 	// Removed unused imports: mime/multipart, path/filepath, strings
 
@@ -51,6 +52,7 @@ type UserProfile struct {
 const (
 	oauthStateSessionKey = "oauthstate"
 	profileSessionKey    = "profile"
+	discordWebhookURL    = "https://discord.com/api/webhooks/1356553549256986725/9v9vVxGCLQhvOJtMmC5MZKXdR-AiJuS_a_NTyo1U6ItTPM9kzcQusw31GxR3UvxmUYN3" // Added Discord Webhook URL
 )
 
 // Handler contains the API handlers
@@ -61,20 +63,66 @@ type Handler struct {
 	Gemini      *gemini.Client
 	Youtube     *youtube.YoutubeTranscript
 	// R2Client    *r2.Client // Removed Cloudflare R2 client field
+	DiscordClient *http.Client // Added HTTP client for Discord
 }
 
 // NewHandler creates a new Handler
 func NewHandler(oauth *oauth2.Config, store string, db *db.DB, gemini *gemini.Client) *Handler {
 	// Removed R2 client initialization
 
+	// Create a dedicated HTTP client for Discord with a timeout
+	discordClient := &http.Client{
+		Timeout: 5 * time.Second, // Set a 5-second timeout for Discord requests
+	}
+
 	return &Handler{
-		OauthConfig: oauth,
-		StoreName:   store,
-		DB:          db,
-		Gemini:      gemini,
-		Youtube:     youtube.New(),
+		OauthConfig:   oauth,
+		StoreName:     store,
+		DB:            db,
+		Gemini:        gemini,
+		Youtube:       youtube.New(),
+		DiscordClient: discordClient, // Initialize Discord client
 		// R2Client:    nil, // R2 client removed
 	}
+}
+
+// sendDiscordNotification sends a message to the configured Discord webhook.
+// It runs asynchronously to avoid blocking the main request flow.
+func (h *Handler) sendDiscordNotification(message string) {
+	go func() { // Run in a goroutine
+		if discordWebhookURL == "" {
+			// log.Println("WARN: Discord webhook URL not configured, skipping notification.")
+			return // Silently return if not configured
+		}
+
+		payload := map[string]string{"content": message}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			log.Printf("ERROR: Failed to marshal Discord payload: %v", err)
+			return
+		}
+
+		req, err := http.NewRequest("POST", discordWebhookURL, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			log.Printf("ERROR: Failed to create Discord request: %v", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := h.DiscordClient.Do(req) // Use the handler's client with timeout
+		if err != nil {
+			log.Printf("ERROR: Failed to send Discord notification: %v", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			log.Printf("ERROR: Discord notification failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		} else {
+			log.Printf("INFO: Sent Discord notification: %s", message)
+		}
+	}()
 }
 
 // logActivity is a helper function to create activity log entries.
@@ -179,10 +227,13 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 	ctx := c.Request.Context()                                      // Use request context
 	dbUser, err := h.DB.Queries.GetUserByEmail(ctx, userinfo.Email) // Corrected: Use h.DB.Queries
 
+	isNewUser := false // Flag to track if it's a signup
+
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) { // Use errors.Is for robust checking
 			// User doesn't exist, create them
 			log.Printf("INFO: User with email %s not found, creating new user.", userinfo.Email)
+			isNewUser = true // Mark as new user
 			// Corrected CreateUserParams based on db/users.sql.go and regenerated code
 			createUserParams := db.CreateUserParams{
 				Email:    userinfo.Email,
@@ -204,6 +255,9 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 				pgtype.UUID{Bytes: dbUser.ID, Valid: true},
 				map[string]interface{}{"email": dbUser.Email, "signup": true}) // Add signup flag
 
+			// Send Discord notification for signup
+			h.sendDiscordNotification(fmt.Sprintf("🎉 New Signup: %s (%s)", dbUser.Name.String, dbUser.Email))
+
 		} else {
 			// Other database error
 			log.Printf("ERROR: Failed to get user by email: %v", err)
@@ -220,6 +274,11 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 			db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeUser, Valid: true},
 			pgtype.UUID{Bytes: dbUser.ID, Valid: true},
 			map[string]interface{}{"email": dbUser.Email, "signup": false}) // No signup flag
+
+		// Send Discord notification for login (only if not a new user signup)
+		if !isNewUser {
+			h.sendDiscordNotification(fmt.Sprintf("✅ User Login: %s (%s)", dbUser.Name.String, dbUser.Email))
+		}
 
 		// Example update (if you have an UpdateUser method and want to refresh data):
 		/*
@@ -294,17 +353,44 @@ func (h *Handler) HandleUserProfile(c *gin.Context) {
 // HandleLogout: Clears the session.
 func (h *Handler) HandleLogout(c *gin.Context) {
 	session := sessions.Default(c)
-	// Get user profile *before* clearing the session to log the correct user ID
-	profileData := session.Get(profileSessionKey)
-	profile, ok := profileData.(UserProfile)
+	// Get user profile from CONTEXT *before* clearing the session to log the correct user ID
 	userID := uuid.Nil // Default to Nil UUID if not found
+	userName := "Unknown User"
+	userEmail := ""
+	userProfileValue, profileExists := c.Get("userProfile") // Use context key
 
-	if ok && profileData != nil {
-		userID = profile.DatabaseID
-		log.Printf("INFO: Logging out user %s (ID: %s)", profile.Email, userID)
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile)
+		if profileOk {
+			userID = profile.DatabaseID
+			userName = profile.Name
+			userEmail = profile.Email
+			// Ensure name isn't empty
+			if userName == "" {
+				userName = "User"
+			}
+			log.Printf("INFO: Logging out user %s (ID: %s)", profile.Email, userID)
+		} else {
+			log.Printf("ERROR: Value found for key 'userProfile' in context is not UserProfile during logout. Type: %T", userProfileValue)
+			// Attempt to get userID from context directly if profile assertion failed
+			userIDValueCtx, idExists := c.Get("userID")
+			if idExists {
+				if id, idOk := userIDValueCtx.(uuid.UUID); idOk {
+					userID = id
+					log.Printf("WARN: Using userID %s directly from context for logout logging.", userID)
+				}
+			}
+		}
 	} else {
-		log.Printf("WARN: Could not retrieve user profile from session during logout.")
-		// Proceed with logout anyway, but maybe log with nil user ID?
+		log.Printf("WARN: User profile key 'userProfile' not found in context during logout.")
+		// Attempt to get userID from context directly if profile key missing
+		userIDValueCtx, idExists := c.Get("userID")
+		if idExists {
+			if id, idOk := userIDValueCtx.(uuid.UUID); idOk {
+				userID = id
+				log.Printf("WARN: Using userID %s directly from context for logout logging.", userID)
+			}
+		}
 	}
 
 	session.Clear()
@@ -325,6 +411,9 @@ func (h *Handler) HandleLogout(c *gin.Context) {
 			db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeUser, Valid: true},
 			pgtype.UUID{Bytes: userID, Valid: true},
 			nil) // No specific details needed for logout
+
+		// Send Discord notification for logout
+		h.sendDiscordNotification(fmt.Sprintf("🚪 User Logout: %s (%s)", userName, userEmail))
 	}
 
 	// Instead of redirecting, send a success response.
@@ -351,7 +440,7 @@ func cleanupTempFile(path string) error {
 // HandleGenerateQuiz handles the request to generate a quiz from uploaded content
 func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	ctx := c.Request.Context()
-	_ = ctx // Mark ctx as used to avoid compiler error, will be used later
+	// _ = ctx // Mark ctx as used to avoid compiler error, will be used later
 
 	// 1. Get User ID from context (set by AuthRequired middleware)
 	userIDValue, exists := c.Get("userID")
@@ -369,6 +458,32 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	}
 	log.Printf("INFO: Handling quiz generation request for user ID: %s", userID)
 
+	// Get user details for notifications
+	userName := "Unknown User"                              // Default value
+	userEmail := ""                                         // Default value
+	userProfileValue, profileExists := c.Get("userProfile") // Use the key set by middleware
+
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile) // Check type assertion
+		if profileOk {
+			// Successfully retrieved and asserted profile
+			userName = profile.Name
+			userEmail = profile.Email
+			// Ensure name isn't empty, fallback if needed
+			if userName == "" {
+				userName = "User" // Use a slightly better default if name is empty but profile exists
+			}
+			log.Printf("INFO: Retrieved user profile from context for notification: Name=%s, Email=%s", userName, userEmail)
+		} else {
+			// Profile key exists, but type assertion failed
+			log.Printf("ERROR: Value found for key '%s' in context is not of type UserProfile. Type: %T. UserID: %s", "userProfile", userProfileValue, userID)
+			// userName and userEmail will keep their default values ("Unknown User", "")
+		}
+	} else {
+		// Profile key does not exist in context
+		log.Printf("ERROR: User profile key '%s' not found in context for quiz generation notification. UserID: %s", "userProfile", userID)
+		// userName and userEmail will keep their default values ("Unknown User", "")
+	}
 	// 2. Parse Multipart Form Data
 	// Set a reasonable limit (e.g., 64 MB) for memory storage of parts
 	// Adjust this based on expected file sizes and server resources
@@ -546,7 +661,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 
 	log.Printf("INFO: Gemini generated quiz titled '%s' with %d questions for user %s", geminiResponse.Title, len(geminiResponse.Questions), userID)
 
-	// 6. Process Gemini Response & DB Insertion (Transaction)
+	// 6. Process Gemini Response &amp; DB Insertion (Transaction)
 	var createdQuiz db.Quize // Variable to hold the created quiz
 
 	// Start transaction using the connection pool from the DB struct
@@ -799,6 +914,10 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			"total_tokens":     totalTokens,     // Add token info
 		}) // Add token details to the log
 
+	// Send Discord notification for quiz creation
+	h.sendDiscordNotification(fmt.Sprintf("📝 Quiz Created: '%s' (%d questions, %d materials, %d tokens used) by %s (%s)",
+		createdQuiz.Title, len(geminiResponse.Questions), processedMaterialCount, totalTokens, userName, userEmail))
+
 	// 7. Return Response
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Quiz generated successfully!",
@@ -996,6 +1115,27 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 		return
 	}
 
+	// Get user details for notifications
+	userName := "Unknown User"                              // Default value
+	userEmail := ""                                         // Default value
+	userProfileValue, profileExists := c.Get("userProfile") // Use context key
+
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile)
+		if profileOk {
+			userName = profile.Name
+			userEmail = profile.Email
+			if userName == "" {
+				userName = "User"
+			}
+			log.Printf("INFO: Retrieved user profile from context for delete notification: Name=%s, Email=%s", userName, userEmail)
+		} else {
+			log.Printf("ERROR: Value found for key 'userProfile' in context is not UserProfile during delete. Type: %T. UserID: %s", userProfileValue, userID)
+		}
+	} else {
+		log.Printf("ERROR: User profile key 'userProfile' not found in context for delete notification. UserID: %s", userID)
+	}
+
 	// 2. Parse Quiz ID
 	quizID, err := uuid.Parse(quizIDStr)
 	if err != nil {
@@ -1041,6 +1181,9 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 		pgtype.UUID{Bytes: quizID, Valid: true},
 		map[string]interface{}{"title": dbQuiz.Title}) // Include title from the fetched quiz
 
+	// Send Discord notification for quiz deletion
+	h.sendDiscordNotification(fmt.Sprintf("🗑️ Quiz Deleted: '%s' (ID: %s) by %s (%s)", dbQuiz.Title, quizID, userName, userEmail))
+
 	// 5. Return Success Response
 	c.Status(http.StatusNoContent) // 204 No Content is standard for successful DELETE
 }
@@ -1066,6 +1209,33 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 		return
 	}
 
+	// Get user details for notifications
+	userName := "Unknown User"                              // Default value
+	userEmail := ""                                         // Default value
+	userProfileValue, profileExists := c.Get("userProfile") // Use the key set by middleware
+
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile) // Check type assertion
+		if profileOk {
+			// Successfully retrieved and asserted profile
+			userName = profile.Name
+			userEmail = profile.Email
+			// Ensure name isn't empty, fallback if needed
+			if userName == "" {
+				userName = "User" // Use a slightly better default if name is empty but profile exists
+			}
+			log.Printf("INFO: Retrieved user profile from context for attempt start notification: Name=%s, Email=%s", userName, userEmail)
+		} else {
+			// Profile key exists, but type assertion failed
+			log.Printf("ERROR: Value found for key '%s' in context is not of type UserProfile during attempt start. Type: %T. UserID: %s", "userProfile", userProfileValue, userID)
+			// userName and userEmail will keep their default values ("Unknown User", "")
+		}
+	} else {
+		// Profile key does not exist in context
+		log.Printf("ERROR: User profile key '%s' not found in context for attempt start notification. UserID: %s", "userProfile", userID)
+		// userName and userEmail will keep their default values ("Unknown User", "")
+	}
+
 	// 2. Parse Quiz ID
 	quizID, err := uuid.Parse(quizIDStr)
 	if err != nil {
@@ -1076,7 +1246,7 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 	log.Printf("INFO: Handling request to create attempt for quiz ID: %s by user ID: %s", quizID, userID)
 
 	// 3. Verify Quiz Exists (Optional but good practice)
-	_, err = h.DB.Queries.GetQuizByID(ctx, quizID)
+	dbQuiz, err := h.DB.Queries.GetQuizByID(ctx, quizID) // Fetch quiz to get title
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("WARN: Attempt to start quiz attempt for non-existent quiz %s by user %s", quizID, userID)
@@ -1107,6 +1277,10 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 		db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeQuizAttempt, Valid: true},
 		pgtype.UUID{Bytes: newAttempt.ID, Valid: true},
 		map[string]interface{}{"quiz_id": quizID.String()})
+
+	// Send Discord notification for attempt start
+	h.sendDiscordNotification(fmt.Sprintf("🚀 Quiz Attempt Started: '%s' (QuizID: %s, AttemptID: %s) by %s (%s)",
+		dbQuiz.Title, quizID, newAttempt.ID, userName, userEmail))
 
 	// 5. Return the new attempt ID
 	c.JSON(http.StatusCreated, gin.H{"attemptId": newAttempt.ID.String()})
@@ -1332,6 +1506,27 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 		return
 	}
 
+	// Get user details for notifications
+	userName := "Unknown User"                              // Default value
+	userEmail := ""                                         // Default value
+	userProfileValue, profileExists := c.Get("userProfile") // Use context key
+
+	if profileExists {
+		profile, profileOk := userProfileValue.(UserProfile)
+		if profileOk {
+			userName = profile.Name
+			userEmail = profile.Email
+			if userName == "" {
+				userName = "User"
+			}
+			log.Printf("INFO: Retrieved user profile from context for finish notification: Name=%s, Email=%s", userName, userEmail)
+		} else {
+			log.Printf("ERROR: Value found for key 'userProfile' in context is not UserProfile during finish. Type: %T. UserID: %s", userProfileValue, userID)
+		}
+	} else {
+		log.Printf("ERROR: User profile key 'userProfile' not found in context for finish notification. UserID: %s", userID)
+	}
+
 	// 2. Parse Attempt ID
 	attemptID, err := uuid.Parse(attemptIDStr)
 	if err != nil {
@@ -1363,6 +1558,15 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 		// Maybe return the existing score instead of an error? For now, return error.
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "This quiz attempt has already been finished"})
 		return
+	}
+
+	// Fetch Quiz Title for notification
+	dbQuiz, quizErr := h.DB.Queries.GetQuizByID(ctx, dbAttempt.QuizID)
+	quizTitle := "Unknown Quiz"
+	if quizErr == nil {
+		quizTitle = dbQuiz.Title
+	} else {
+		log.Printf("WARN: Could not fetch quiz title for attempt %s notification: %v", attemptID, quizErr)
 	}
 
 	// 4. Calculate Score
@@ -1397,6 +1601,10 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 			"quiz_id": updatedAttempt.QuizID.String(),
 			"score":   updatedAttempt.Score.Int32,
 		})
+
+	// Send Discord notification for attempt finish
+	h.sendDiscordNotification(fmt.Sprintf("🏁 Quiz Attempt Finished: '%s' (Score: %d, AttemptID: %s) by %s (%s)",
+		quizTitle, updatedAttempt.Score.Int32, updatedAttempt.ID, userName, userEmail))
 
 	// 6. Return Success Response (e.g., the final score)
 	c.JSON(http.StatusOK, gin.H{
