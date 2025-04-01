@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql" // Added for session store connection
 	"encoding/gob"
+
 	// "fmt" // Removed unused import
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"quizbuilderai/internal/api"
+	"quizbuilderai/internal/api/handlers" // Add import for the new handlers package
 	"quizbuilderai/internal/db"
 	"quizbuilderai/internal/gemini"
 
@@ -63,7 +65,10 @@ func init() {
 	sessionSecretKey = []byte(secret) // Assign to the package-level variable
 
 	// Register types needed for session storage
-	gob.Register(api.UserProfile{}) // Register the UserProfile type from the api package
+	// Register the *new* type from the handlers package. Gob needs to know about the concrete type.
+	// If sessions were saved with the old type path, clearing sessions might be necessary.
+	// For now, ensure the new type is registered correctly.
+	gob.Register(handlers.UserProfile{})
 
 	// --- Google OAuth Configuration ---
 	clientID := os.Getenv("GOOGLE_CLIENT_ID")
@@ -157,7 +162,7 @@ func main() {
 	router.Use(sessions.Sessions(storeName, store))
 
 	// Set up API handlers
-	handler := api.NewHandler(GoogleOauthConfig, storeName, database, geminiClient)
+	handler := handlers.NewHandler(GoogleOauthConfig, storeName, database, geminiClient) // Use NewHandler from handlers package
 	api.SetupRoutes(router, handler)
 
 	// Get port from environment variable or use default

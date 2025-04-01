@@ -6,6 +6,8 @@ import (
 	"os"       // Import os package to read environment variables
 	"strings"  // Import strings package for TrimSuffix
 
+	"quizbuilderai/internal/api/handlers" // Import the new handlers package
+
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid" // Added for uuid.Nil check
@@ -45,9 +47,9 @@ func CORSMiddleware() gin.HandlerFunc {
 func AuthRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		session := sessions.Default(c)
-		profileValue := session.Get(profileSessionKey)
+		profileValue := session.Get(handlers.ProfileSessionKey) // Use capitalized constant from handlers package
 
-		profileData, ok := profileValue.(UserProfile)
+		profileData, ok := profileValue.(handlers.UserProfile) // Use type from handlers package
 		// Check if profile exists in session AND if the DatabaseID is valid (not Nil)
 		if !ok || profileValue == nil || profileData.DatabaseID == uuid.Nil {
 			log.Printf("WARN: AuthRequired failed - profile not found, invalid type, or missing DatabaseID in session.")
