@@ -42,7 +42,7 @@ type Querier interface {
 	GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, error)
 	GetQuizAttempt(ctx context.Context, id uuid.UUID) (QuizAttempt, error)
 	GetQuizAttemptWithDetails(ctx context.Context, id uuid.UUID) (GetQuizAttemptWithDetailsRow, error)
-	GetQuizByID(ctx context.Context, id uuid.UUID) (Quize, error)
+	GetQuizByID(ctx context.Context, id uuid.UUID) (GetQuizByIDRow, error)
 	// Less common to fetch by its own ID, but included for completeness
 	GetQuizMaterialByID(ctx context.Context, id uuid.UUID) (QuizMaterial, error)
 	GetQuizMaterialByQuizAndMaterialID(ctx context.Context, arg GetQuizMaterialByQuizAndMaterialIDParams) (QuizMaterial, error)

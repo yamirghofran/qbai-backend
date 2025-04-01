@@ -934,30 +934,34 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 
 // Define response structures matching frontend/src/types/index.ts
 type ResponseOption struct {
-	ID          uuid.UUID   `json:"id"`
-	Text        string      `json:"text"`
-	IsCorrect   bool        `json:"is_correct"`
-	Explanation pgtype.Text `json:"explanation"` // Add explanation field (nullable)
+	ID          uuid.UUID `json:"id"`
+	Text        string    `json:"text"`
+	IsCorrect   bool      `json:"is_correct"`
+	Explanation *string   `json:"explanation,omitempty"` // Use pointer for optional string
 }
 
 type ResponseQuestion struct {
 	ID         uuid.UUID        `json:"id"`
 	Text       string           `json:"text"`
-	TopicTitle pgtype.Text      `json:"topic_title"` // Added topic title (nullable)
+	TopicTitle *string          `json:"topic_title,omitempty"` // Use pointer for optional string
 	Options    []ResponseOption `json:"options"`
 }
 
-type ResponseQuiz struct {
-	ID          uuid.UUID          `json:"id"`
-	Title       string             `json:"title"`
-	Description pgtype.Text        `json:"description"` // Added description
-	Visibility  db.QuizVisibility  `json:"visibility"`  // Added visibility
-	Questions   []ResponseQuestion `json:"questions"`
-	CreatedAt   time.Time          `json:"created_at"`
-	UpdatedAt   time.Time          `json:"updated_at"`
+// ResponseQuizDetail represents the detailed quiz data sent to the frontend, including creator info.
+// Note: We use pointers for optional fields to allow null/omitted values in JSON.
+type ResponseQuizDetail struct {
+	ID             uuid.UUID          `json:"id"`
+	Title          string             `json:"title"`
+	Description    *string            `json:"description,omitempty"` // Use pointer for optional string
+	Visibility     db.QuizVisibility  `json:"visibility"`
+	Questions      []ResponseQuestion `json:"questions"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+	CreatorName    *string            `json:"creator_name,omitempty"`    // Add creator name (optional)
+	CreatorPicture *string            `json:"creator_picture,omitempty"` // Add creator picture (optional)
 }
 
-// HandleGetQuiz retrieves a specific quiz by its ID, including its questions and answers.
+// HandleGetQuiz retrieves a specific quiz by its ID, including its questions, answers, and creator info.
 func (h *Handler) HandleGetQuiz(c *gin.Context) {
 	ctx := c.Request.Context()
 	quizIDStr := c.Param("quizId")
@@ -971,9 +975,9 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 	}
 	log.Printf("INFO: Handling request for quiz ID: %s", quizID)
 
-	// 2. Fetch Quiz details
-	// Use the correct function name: GetQuizByID
-	dbQuiz, err := h.DB.Queries.GetQuizByID(ctx, quizID)
+	// 2. Fetch Quiz details including creator info
+	// GetQuizByID now returns db.GetQuizByIDRow which includes creator_name and creator_picture
+	dbQuizData, err := h.DB.Queries.GetQuizByID(ctx, quizID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("WARN: Quiz not found: %s", quizID)
@@ -986,7 +990,6 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 	}
 
 	// 3. Fetch Questions for the Quiz
-	// Use the correct function name: ListQuestionsByQuizID
 	dbQuestions, err := h.DB.Queries.ListQuestionsByQuizID(ctx, quizID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) { // It's okay if a quiz has no questions yet
 		log.Printf("ERROR: Failed to get questions for quiz %s: %v", quizID, err)
@@ -995,47 +998,79 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 	}
 	log.Printf("INFO: Found %d questions for quiz %s", len(dbQuestions), quizID)
 
-	// 4. Structure the response
-	response := ResponseQuiz{
-		ID:          dbQuiz.ID,
-		Title:       dbQuiz.Title,
-		Description: dbQuiz.Description, // Added description
-		Visibility:  dbQuiz.Visibility,  // Added visibility
-		// Ensure CreatedAt and UpdatedAt are handled correctly (assuming pgtype.Timestamptz)
-		CreatedAt: dbQuiz.CreatedAt,
-		UpdatedAt: dbQuiz.UpdatedAt,
-		Questions: make([]ResponseQuestion, 0, len(dbQuestions)), // Pre-allocate slice
-	}
-
-	// 5. Fetch Answers for each Question and populate response
+	// 4. Fetch Answers for each Question and build response questions
+	responseQuestions := make([]ResponseQuestion, 0, len(dbQuestions))
 	for _, dbQ := range dbQuestions {
-		// Use the correct function name: ListAnswersByQuestionID
 		dbAnswers, err := h.DB.Queries.ListAnswersByQuestionID(ctx, dbQ.ID)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) { // It's okay if a question has no answers (though unlikely for MCQs)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			log.Printf("WARN: Failed to get answers for question %s (quiz %s): %v", dbQ.ID, quizID, err)
 			// Continue processing other questions, this one will have no options
 		}
 
-		respQ := ResponseQuestion{
-			ID:         dbQ.ID,
-			Text:       dbQ.Question,
-			TopicTitle: dbQ.TopicTitle,                            // Added topic title from the joined query result
-			Options:    make([]ResponseOption, 0, len(dbAnswers)), // Pre-allocate
+		// Map db.Answer to ResponseOption
+		responseOptions := make([]ResponseOption, 0, len(dbAnswers))
+		for _, dbA := range dbAnswers {
+			// Handle nullable Explanation
+			var explanation *string
+			if dbA.Explanation.Valid {
+				explanationStr := dbA.Explanation.String // Assign to temp variable
+				explanation = &explanationStr
+			}
+			responseOptions = append(responseOptions, ResponseOption{
+				ID:          dbA.ID,
+				Text:        dbA.Answer, // Use 'Answer' field from db.Answer
+				IsCorrect:   dbA.IsCorrect,
+				Explanation: explanation, // Use the *string variable
+			})
 		}
 
-		for _, dbA := range dbAnswers {
-			respOpt := ResponseOption{
-				ID:          dbA.ID,
-				Text:        dbA.Answer, // Assuming the field name in db.Answer is 'Answer'
-				IsCorrect:   dbA.IsCorrect,
-				Explanation: dbA.Explanation, // Map the explanation from the DB
-			}
-			respQ.Options = append(respQ.Options, respOpt)
+		// Handle nullable TopicTitle
+		var topicTitle *string
+		if dbQ.TopicTitle.Valid {
+			topicTitleStr := dbQ.TopicTitle.String // Assign to temp variable
+			topicTitle = &topicTitleStr
 		}
-		response.Questions = append(response.Questions, respQ)
+
+		// Map db.Question to ResponseQuestion
+		responseQuestions = append(responseQuestions, ResponseQuestion{
+			ID:         dbQ.ID,
+			Text:       dbQ.Question, // Use 'Question' field from db.Question
+			TopicTitle: topicTitle,   // Use the *string variable
+			Options:    responseOptions,
+		})
 	}
 
-	log.Printf("INFO: Successfully prepared response for quiz %s", quizID)
+	// 5. Structure the final response using ResponseQuizDetail
+	// Handle nullable Description, CreatorName, CreatorPicture
+	var description *string
+	if dbQuizData.Description.Valid {
+		descStr := dbQuizData.Description.String
+		description = &descStr
+	}
+	var creatorName *string
+	if dbQuizData.CreatorName.Valid {
+		nameStr := dbQuizData.CreatorName.String
+		creatorName = &nameStr
+	}
+	var creatorPicture *string
+	if dbQuizData.CreatorPicture.Valid {
+		picStr := dbQuizData.CreatorPicture.String
+		creatorPicture = &picStr
+	}
+
+	response := ResponseQuizDetail{
+		ID:             dbQuizData.ID,
+		Title:          dbQuizData.Title,
+		Description:    description,
+		Visibility:     dbQuizData.Visibility,
+		CreatedAt:      dbQuizData.CreatedAt,
+		UpdatedAt:      dbQuizData.UpdatedAt,
+		CreatorName:    creatorName,
+		CreatorPicture: creatorPicture,
+		Questions:      responseQuestions, // Assign the processed questions
+	}
+
+	log.Printf("INFO: Successfully prepared detailed response for quiz %s", quizID)
 	// 6. Return JSON response
 	c.JSON(http.StatusOK, response)
 }
