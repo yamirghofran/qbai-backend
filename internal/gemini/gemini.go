@@ -1,7 +1,5 @@
 package gemini
 
-//TODO - UPDATE TO MATCH NEW SCHEMA
-
 import (
 	"context"
 	"encoding/json"

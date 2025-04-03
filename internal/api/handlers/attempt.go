@@ -23,16 +23,18 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 	quizIDStr := c.Param("quizId")
 
 	// 1. Get User ID from context
+	var userID uuid.UUID // Declare userID here to handle cases where it's not found/invalid
 	userIDValue, exists := c.Get("userID")
 	if !exists {
-		log.Printf("ERROR: User ID not found in context for creating quiz attempt")
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, "User ID not found in context for creating quiz attempt", errors.New("user not authenticated"))
 		return
 	}
-	userID, ok := userIDValue.(uuid.UUID)
+	var ok bool
+	userID, ok = userIDValue.(uuid.UUID) // Assign to the declared userID
 	if !ok {
-		log.Printf("ERROR: User ID in context is not UUID for creating quiz attempt")
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID type"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "User ID in context is not UUID for creating quiz attempt", errors.New("invalid user ID type in context"))
 		return
 	}
 
@@ -66,8 +68,8 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 	// 2. Parse Quiz ID
 	quizID, err := uuid.Parse(quizIDStr)
 	if err != nil {
-		log.Printf("ERROR: Invalid Quiz ID format '%s' for creating attempt: %v", quizIDStr, err)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid Quiz ID format"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, fmt.Sprintf("Invalid Quiz ID format '%s' for creating attempt", quizIDStr), err)
 		return
 	}
 	log.Printf("INFO: Handling request to create attempt for quiz ID: %s by user ID: %s", quizID, userID)
@@ -76,11 +78,11 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 	dbQuiz, err := h.DB.Queries.GetQuizByID(ctx, quizID) // Fetch quiz to get title
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("WARN: Attempt to start quiz attempt for non-existent quiz %s by user %s", quizID, userID)
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Quiz not found"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusNotFound, fmt.Sprintf("Attempt to start quiz attempt for non-existent quiz %s", quizID), err)
 		} else {
-			log.Printf("ERROR: Failed to verify quiz %s existence for attempt creation: %v", quizID, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify quiz details"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to verify quiz %s existence for attempt creation", quizID), err)
 		}
 		return
 	}
@@ -92,8 +94,8 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 	}
 	newAttempt, err := h.DB.Queries.CreateQuizAttempt(ctx, attemptParams)
 	if err != nil {
-		log.Printf("ERROR: Failed to create quiz attempt for quiz %s, user %s: %v", quizID, userID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to start quiz attempt"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to create quiz attempt for quiz %s", quizID), err)
 		return
 	}
 
@@ -105,9 +107,19 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 		pgtype.UUID{Bytes: newAttempt.ID, Valid: true},
 		map[string]interface{}{"quiz_id": quizID.String()})
 
-	// Send Discord notification for attempt start
-	h.sendDiscordNotification(fmt.Sprintf("🚀 Quiz Attempt Started: '%s' (QuizID: %s, AttemptID: %s) by %s (%s)",
-		dbQuiz.Title, quizID, newAttempt.ID, userName, userEmail))
+	// Send Discord notification for attempt start using Embed
+	startEmbed := DiscordEmbed{
+		Title: "🚀 Quiz Attempt Started",
+		Color: 0x2196F3, // Blue color
+		Fields: []DiscordEmbedField{
+			{Name: "Quiz Title", Value: dbQuiz.Title, Inline: true},
+			{Name: "Quiz ID", Value: fmt.Sprintf("`%s`", quizID.String()), Inline: true},
+			{Name: "Attempt ID", Value: fmt.Sprintf("`%s`", newAttempt.ID.String()), Inline: false},
+			{Name: "Started By", Value: fmt.Sprintf("%s (%s)", userName, userEmail), Inline: false},
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+	h.sendDiscordNotification(startEmbed)
 
 	// 5. Return the new attempt ID
 	c.JSON(http.StatusCreated, gin.H{"attemptId": newAttempt.ID.String()})
@@ -137,24 +149,26 @@ func (h *Handler) HandleGetQuizAttempt(c *gin.Context) {
 	attemptIDStr := c.Param("attemptId")
 
 	// 1. Get User ID from context
+	var userID uuid.UUID // Declare userID
 	userIDValue, exists := c.Get("userID")
 	if !exists {
-		log.Printf("ERROR: User ID not found in context for getting quiz attempt %s", attemptIDStr)
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, fmt.Sprintf("User ID not found in context for getting quiz attempt %s", attemptIDStr), errors.New("user not authenticated"))
 		return
 	}
-	userID, ok := userIDValue.(uuid.UUID)
+	var ok bool
+	userID, ok = userIDValue.(uuid.UUID) // Assign to declared userID
 	if !ok {
-		log.Printf("ERROR: User ID in context is not UUID for getting quiz attempt %s", attemptIDStr)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID type"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, fmt.Sprintf("User ID in context is not UUID for getting quiz attempt %s", attemptIDStr), errors.New("invalid user ID type in context"))
 		return
 	}
 
 	// 2. Parse Attempt ID
 	attemptID, err := uuid.Parse(attemptIDStr)
 	if err != nil {
-		log.Printf("ERROR: Invalid Attempt ID format '%s': %v", attemptIDStr, err)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid Attempt ID format"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, fmt.Sprintf("Invalid Attempt ID format '%s'", attemptIDStr), err)
 		return
 	}
 	log.Printf("INFO: Handling request to get attempt ID: %s for user ID: %s", attemptID, userID)
@@ -163,27 +177,27 @@ func (h *Handler) HandleGetQuizAttempt(c *gin.Context) {
 	dbAttempt, err := h.DB.Queries.GetQuizAttempt(ctx, attemptID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("WARN: Quiz attempt not found: %s", attemptID)
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Quiz attempt not found"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusNotFound, fmt.Sprintf("Quiz attempt not found: %s", attemptID), err)
 		} else {
-			log.Printf("ERROR: Failed to get quiz attempt %s: %v", attemptID, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve quiz attempt"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to get quiz attempt %s", attemptID), err)
 		}
 		return
 	}
 
 	// Verify ownership
 	if dbAttempt.UserID != userID {
-		log.Printf("WARN: User %s attempted to access quiz attempt %s owned by user %s", userID, attemptID, dbAttempt.UserID)
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "You do not have permission to access this quiz attempt"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusForbidden, fmt.Sprintf("User %s attempted to access quiz attempt %s owned by user %s", userID, attemptID, dbAttempt.UserID), errors.New("you do not have permission to access this quiz attempt"))
 		return
 	}
 
 	// 4. Fetch Saved Answers for the Attempt
 	dbAnswers, err := h.DB.Queries.ListAttemptAnswersByAttempt(ctx, attemptID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) { // It's okay if there are no answers yet
-		log.Printf("ERROR: Failed to get answers for attempt %s: %v", attemptID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve attempt answers"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to get answers for attempt %s", attemptID), err)
 		return
 	}
 	if dbAnswers == nil {
@@ -227,32 +241,34 @@ func (h *Handler) HandleSaveAttemptAnswer(c *gin.Context) {
 	attemptIDStr := c.Param("attemptId")
 
 	// 1. Get User ID from context
+	var userID uuid.UUID // Declare userID
 	userIDValue, exists := c.Get("userID")
 	if !exists {
-		log.Printf("ERROR: User ID not found in context for saving answer to attempt %s", attemptIDStr)
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, fmt.Sprintf("User ID not found in context for saving answer to attempt %s", attemptIDStr), errors.New("user not authenticated"))
 		return
 	}
-	userID, ok := userIDValue.(uuid.UUID)
+	var ok bool
+	userID, ok = userIDValue.(uuid.UUID) // Assign to declared userID
 	if !ok {
-		log.Printf("ERROR: User ID in context is not UUID for saving answer to attempt %s", attemptIDStr)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID type"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, fmt.Sprintf("User ID in context is not UUID for saving answer to attempt %s", attemptIDStr), errors.New("invalid user ID type in context"))
 		return
 	}
 
 	// 2. Parse Attempt ID
 	attemptID, err := uuid.Parse(attemptIDStr)
 	if err != nil {
-		log.Printf("ERROR: Invalid Attempt ID format '%s' for saving answer: %v", attemptIDStr, err)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid Attempt ID format"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, fmt.Sprintf("Invalid Attempt ID format '%s' for saving answer", attemptIDStr), err)
 		return
 	}
 
 	// 3. Bind JSON Request Body
 	var req SaveAttemptAnswerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		log.Printf("ERROR: Invalid request body for saving answer to attempt %s: %v", attemptID, err)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Invalid request body: %v", err)})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, fmt.Sprintf("Invalid request body for saving answer to attempt %s", attemptID), err)
 		return
 	}
 	log.Printf("INFO: Handling request to save answer (Q: %s, A: %s) for attempt ID: %s by user ID: %s", req.QuestionID, req.SelectedAnswerID, attemptID, userID)
@@ -261,23 +277,23 @@ func (h *Handler) HandleSaveAttemptAnswer(c *gin.Context) {
 	dbAttempt, err := h.DB.Queries.GetQuizAttempt(ctx, attemptID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("WARN: Quiz attempt not found when saving answer: %s", attemptID)
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Quiz attempt not found"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusNotFound, fmt.Sprintf("Quiz attempt not found when saving answer: %s", attemptID), err)
 		} else {
-			log.Printf("ERROR: Failed to get quiz attempt %s when saving answer: %v", attemptID, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve quiz attempt"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to get quiz attempt %s when saving answer", attemptID), err)
 		}
 		return
 	}
 	if dbAttempt.UserID != userID {
-		log.Printf("WARN: User %s attempted to save answer to attempt %s owned by user %s", userID, attemptID, dbAttempt.UserID)
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "You do not have permission to modify this quiz attempt"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusForbidden, fmt.Sprintf("User %s attempted to save answer to attempt %s owned by user %s", userID, attemptID, dbAttempt.UserID), errors.New("you do not have permission to modify this quiz attempt"))
 		return
 	}
 	// Optional: Check if attempt is already finished (dbAttempt.EndTime.Valid)
 	if dbAttempt.EndTime.Valid {
-		log.Printf("WARN: User %s attempted to save answer to already finished attempt %s", userID, attemptID)
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "This quiz attempt has already been finished"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusForbidden, fmt.Sprintf("User %s attempted to save answer to already finished attempt %s", userID, attemptID), errors.New("this quiz attempt has already been finished"))
 		return
 	}
 
@@ -285,11 +301,11 @@ func (h *Handler) HandleSaveAttemptAnswer(c *gin.Context) {
 	isCorrect, err := h.DB.Queries.GetAnswerCorrectness(ctx, req.SelectedAnswerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("ERROR: Selected answer ID %s not found when saving answer for attempt %s", req.SelectedAnswerID, attemptID)
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid selected answer ID"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusBadRequest, fmt.Sprintf("Selected answer ID %s not found when saving answer for attempt %s", req.SelectedAnswerID, attemptID), err)
 		} else {
-			log.Printf("ERROR: Failed to check answer correctness for answer %s, attempt %s: %v", req.SelectedAnswerID, attemptID, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify answer correctness"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to check answer correctness for answer %s, attempt %s", req.SelectedAnswerID, attemptID), err)
 		}
 		return
 	}
@@ -303,9 +319,8 @@ func (h *Handler) HandleSaveAttemptAnswer(c *gin.Context) {
 	}
 	_, err = h.DB.Queries.UpsertAttemptAnswer(ctx, upsertParams)
 	if err != nil {
-		// TODO: Add more specific error handling, e.g., foreign key violation if question_id is invalid for the quiz
-		log.Printf("ERROR: Failed to upsert attempt answer for attempt %s, question %s: %v", attemptID, req.QuestionID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to save answer"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to upsert attempt answer for attempt %s, question %s", attemptID, req.QuestionID), err)
 		return
 	}
 
@@ -320,16 +335,18 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 	attemptIDStr := c.Param("attemptId")
 
 	// 1. Get User ID from context
+	var userID uuid.UUID // Declare userID
 	userIDValue, exists := c.Get("userID")
 	if !exists {
-		log.Printf("ERROR: User ID not found in context for finishing attempt %s", attemptIDStr)
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, fmt.Sprintf("User ID not found in context for finishing attempt %s", attemptIDStr), errors.New("user not authenticated"))
 		return
 	}
-	userID, ok := userIDValue.(uuid.UUID)
+	var ok bool
+	userID, ok = userIDValue.(uuid.UUID) // Assign to declared userID
 	if !ok {
-		log.Printf("ERROR: User ID in context is not UUID for finishing attempt %s", attemptIDStr)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID type"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, fmt.Sprintf("User ID in context is not UUID for finishing attempt %s", attemptIDStr), errors.New("invalid user ID type in context"))
 		return
 	}
 
@@ -357,8 +374,8 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 	// 2. Parse Attempt ID
 	attemptID, err := uuid.Parse(attemptIDStr)
 	if err != nil {
-		log.Printf("ERROR: Invalid Attempt ID format '%s' for finishing: %v", attemptIDStr, err)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid Attempt ID format"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, fmt.Sprintf("Invalid Attempt ID format '%s' for finishing", attemptIDStr), err)
 		return
 	}
 	log.Printf("INFO: Handling request to finish attempt ID: %s by user ID: %s", attemptID, userID)
@@ -367,23 +384,22 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 	dbAttempt, err := h.DB.Queries.GetQuizAttempt(ctx, attemptID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("WARN: Quiz attempt not found when finishing: %s", attemptID)
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Quiz attempt not found"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusNotFound, fmt.Sprintf("Quiz attempt not found when finishing: %s", attemptID), err)
 		} else {
-			log.Printf("ERROR: Failed to get quiz attempt %s when finishing: %v", attemptID, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve quiz attempt"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to get quiz attempt %s when finishing", attemptID), err)
 		}
 		return
 	}
 	if dbAttempt.UserID != userID {
-		log.Printf("WARN: User %s attempted to finish attempt %s owned by user %s", userID, attemptID, dbAttempt.UserID)
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "You do not have permission to finish this quiz attempt"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusForbidden, fmt.Sprintf("User %s attempted to finish attempt %s owned by user %s", userID, attemptID, dbAttempt.UserID), errors.New("you do not have permission to finish this quiz attempt"))
 		return
 	}
 	if dbAttempt.EndTime.Valid {
-		log.Printf("WARN: User %s attempted to finish already finished attempt %s", userID, attemptID)
-		// Maybe return the existing score instead of an error? For now, return error.
-		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "This quiz attempt has already been finished"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusConflict, fmt.Sprintf("User %s attempted to finish already finished attempt %s", userID, attemptID), errors.New("this quiz attempt has already been finished"))
 		return
 	}
 
@@ -399,9 +415,8 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 	// 4. Calculate Score
 	score, err := h.DB.Queries.CalculateQuizAttemptScore(ctx, attemptID)
 	if err != nil {
-		// This shouldn't usually fail if the attempt exists, but handle defensively
-		log.Printf("ERROR: Failed to calculate score for attempt %s: %v", attemptID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to calculate score"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to calculate score for attempt %s", attemptID), err)
 		return
 	}
 
@@ -413,8 +428,8 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 	}
 	updatedAttempt, err := h.DB.Queries.UpdateQuizAttemptScoreAndEndTime(ctx, updateParams)
 	if err != nil {
-		log.Printf("ERROR: Failed to update attempt %s with score and end time: %v", attemptID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to finalize quiz attempt"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to update attempt %s with score and end time", attemptID), err)
 		return
 	}
 
@@ -429,9 +444,19 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 			"score":   updatedAttempt.Score.Int32,
 		})
 
-	// Send Discord notification for attempt finish
-	h.sendDiscordNotification(fmt.Sprintf("🏁 Quiz Attempt Finished: '%s' (Score: %d, AttemptID: %s) by %s (%s)",
-		quizTitle, updatedAttempt.Score.Int32, updatedAttempt.ID, userName, userEmail))
+	// Send Discord notification for attempt finish using Embed
+	finishEmbed := DiscordEmbed{
+		Title: "🏁 Quiz Attempt Finished",
+		Color: 0xFF9800, // Orange color
+		Fields: []DiscordEmbedField{
+			{Name: "Quiz Title", Value: quizTitle, Inline: true},
+			{Name: "Score", Value: fmt.Sprintf("%d", updatedAttempt.Score.Int32), Inline: true}, // Assuming score is out of 100 or similar, adjust if needed
+			{Name: "Attempt ID", Value: fmt.Sprintf("`%s`", updatedAttempt.ID.String()), Inline: false},
+			{Name: "Finished By", Value: fmt.Sprintf("%s (%s)", userName, userEmail), Inline: false},
+		},
+		Timestamp: updatedAttempt.EndTime.Time.Format(time.RFC3339), // Use the actual end time
+	}
+	h.sendDiscordNotification(finishEmbed)
 
 	// 6. Return Success Response (e.g., the final score)
 	c.JSON(http.StatusOK, gin.H{
@@ -447,16 +472,18 @@ func (h *Handler) HandleListUserAttempts(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// 1. Get User ID from context
+	var userID uuid.UUID // Declare userID
 	userIDValue, exists := c.Get("userID")
 	if !exists {
-		log.Printf("ERROR: User ID not found in context for listing user attempts")
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, "User ID not found in context for listing user attempts", errors.New("user not authenticated"))
 		return
 	}
-	userID, ok := userIDValue.(uuid.UUID)
+	var ok bool
+	userID, ok = userIDValue.(uuid.UUID) // Assign to declared userID
 	if !ok {
-		log.Printf("ERROR: User ID in context is not UUID for listing user attempts")
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID type"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "User ID in context is not UUID for listing user attempts", errors.New("invalid user ID type in context"))
 		return
 	}
 	log.Printf("INFO: Handling request to list attempts for user ID: %s", userID)
@@ -464,10 +491,10 @@ func (h *Handler) HandleListUserAttempts(c *gin.Context) {
 	// 2. Fetch Attempts from DB using the new query
 	attempts, err := h.DB.Queries.ListUserAttemptsWithQuizName(ctx, userID)
 	if err != nil {
+		// Use handleErrorAndNotify
 		// sql.ErrNoRows is not typically returned by List methods in sqlc, it returns an empty slice.
 		// Log and return error only for actual database problems.
-		log.Printf("ERROR: Failed to list attempts for user %s: %v", userID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve attempts"})
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to list attempts for user %s", userID), err)
 		return
 	}
 

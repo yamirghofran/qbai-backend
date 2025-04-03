@@ -65,21 +65,22 @@ func cleanupTempFile(path string) error {
 
 // HandleGenerateQuiz handles the request to generate a quiz from uploaded content
 func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
+	startTime := time.Now() // Record start time
 	ctx := c.Request.Context()
 	// _ = ctx // Mark ctx as used to avoid compiler error, will be used later
 
 	// 1. Get User ID from context (set by AuthRequired middleware)
 	userIDValue, exists := c.Get("userID")
 	if !exists {
-		log.Printf("ERROR: User ID not found in context")
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated or context missing user ID"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, "User ID not found in context for quiz generation", errors.New("user not authenticated"))
 		return
 	}
 
 	userID, ok := userIDValue.(uuid.UUID)
 	if !ok {
-		log.Printf("ERROR: User ID in context is not of type uuid.UUID")
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID type in context"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "User ID in context is not UUID for quiz generation", errors.New("invalid user ID type in context"))
 		return
 	}
 	log.Printf("INFO: Handling quiz generation request for user ID: %s", userID)
@@ -115,8 +116,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	// Adjust this based on expected file sizes and server resources
 	err := c.Request.ParseMultipartForm(64 << 20) // 64 MB
 	if err != nil {
-		log.Printf("ERROR: Failed to parse multipart form: %v", err)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Failed to parse form data: %v", err)})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, "Failed to parse multipart form", err)
 		return
 	}
 
@@ -159,8 +160,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 
 		file, err := fileHeader.Open()
 		if err != nil {
-			log.Printf("ERROR: Failed to open uploaded file %s: %v", fileHeader.Filename, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to open file %s", fileHeader.Filename)})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to open uploaded file %s", fileHeader.Filename), err)
 			return // Stop processing on error
 		}
 		// Ensure file is closed (although saving to temp might make this redundant)
@@ -169,8 +170,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		// Read file content (needed for SaveTempFile)
 		fileBytes, err := io.ReadAll(file)
 		if err != nil {
-			log.Printf("ERROR: Failed to read uploaded file %s: %v", fileHeader.Filename, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to read file %s", fileHeader.Filename)})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to read uploaded file %s", fileHeader.Filename), err)
 			return
 		}
 
@@ -178,8 +179,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		// Note: SaveTempFile expects []byte
 		tempPath, err := gemini.SaveTempFile(fileBytes, fileHeader.Filename)
 		if err != nil {
-			log.Printf("ERROR: Failed to save temporary file for %s: %v", fileHeader.Filename, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save temporary file for %s", fileHeader.Filename)})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to save temporary file for %s", fileHeader.Filename), err)
 			return
 		}
 		tempFilePaths = append(tempFilePaths, tempPath) // Add path for deferred cleanup
@@ -236,9 +237,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		transcriptFilename := fmt.Sprintf("transcript_%s.txt", uuid.New().String()) // Unique temp name
 		tempPath, err := gemini.SaveTempFile([]byte(transcript), transcriptFilename)
 		if err != nil {
-			log.Printf("ERROR: Failed to save temporary transcript file for %s: %v", url, err)
-			// Abort here as this is an internal error
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to save temporary transcript for %s", url)})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to save temporary transcript file for %s", url), err)
 			return
 		}
 		tempFilePaths = append(tempFilePaths, tempPath) // Add path for deferred cleanup
@@ -247,8 +247,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		// Get file info for size
 		fileInfo, err := os.Stat(tempPath)
 		if err != nil {
-			log.Printf("ERROR: Failed to get file info for temporary transcript %s: %v", tempPath, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to get file info for transcript %s", url)})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to get file info for temporary transcript %s", tempPath), err)
 			return
 		}
 
@@ -267,8 +267,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 
 	// Check if any content was processed
 	if len(documentFiles) == 0 {
-		log.Printf("ERROR: No valid files or video URLs were processed for user %s", userID)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "No valid content provided or processed. Please check files and URLs."})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, "No valid files or video URLs were processed", errors.New("no valid content provided or processed. Please check files and URLs"))
 		return
 	}
 
@@ -277,9 +277,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	// Receive token counts from ProcessDocuments
 	geminiResponse, promptTokens, candidateTokens, totalTokens, err := h.Gemini.ProcessDocuments(ctx, documentFiles)
 	if err != nil {
-		log.Printf("ERROR: Gemini processing failed for user %s: %v", userID, err)
-		// Consider more specific error mapping if Gemini provides codes/types
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to generate quiz content: %v", err)})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Gemini processing failed", err)
 		return
 	}
 
@@ -287,8 +286,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	log.Printf("INFO: Gemini Token Usage Reported: User=%s, Prompt=%d, Candidates=%d, Total=%d", userID, promptTokens, candidateTokens, totalTokens)
 
 	if geminiResponse == nil || len(geminiResponse.Questions) == 0 {
-		log.Printf("ERROR: Gemini returned no questions for user %s", userID)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Quiz generation resulted in no questions."})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Gemini returned no questions", errors.New("quiz generation resulted in no questions"))
 		return
 	}
 
@@ -300,8 +299,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	// Start transaction using the connection pool from the DB struct
 	tx, err := h.DB.Pool.Begin(ctx)
 	if err != nil {
-		log.Printf("ERROR: Failed to begin database transaction for user %s: %v", userID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to start database transaction"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Failed to begin database transaction", err)
 		return
 	}
 	// Ensure rollback on error
@@ -318,8 +317,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			// Type is automatically set to 'usage' by the query
 		})
 		if tokenErr != nil {
-			log.Printf("ERROR: Failed to create token transaction record for user %s: %v", userID, tokenErr)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to record token usage"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Failed to create token transaction record", tokenErr)
 			return // Rollback happens via defer
 		}
 
@@ -330,8 +329,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			OutputTokensBalance: candidateTokens, // Amount to decrement output balance by
 		})
 		if balanceErr != nil {
-			log.Printf("ERROR: Failed to update token balance for user %s: %v", userID, balanceErr)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to update token balance"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Failed to update token balance", balanceErr)
 			return // Rollback happens via defer
 		}
 		log.Printf("INFO: Recorded token usage and updated balance for user %s: Prompt=%d, Candidates=%d, Total=%d", userID, promptTokens, candidateTokens, totalTokens)
@@ -347,8 +346,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	}
 	createdQuiz, err = qtx.CreateQuiz(ctx, quizParams)
 	if err != nil {
-		log.Printf("ERROR: Failed to create quiz record for user %s: %v", userID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to save quiz"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Failed to create quiz record", err)
 		return
 	}
 	log.Printf("INFO: Created quiz with ID %s for user %s", createdQuiz.ID, userID)
@@ -369,8 +368,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		}
 		material, err := qtx.CreateMaterial(ctx, materialParams)
 		if err != nil {
-			log.Printf("ERROR: Failed to create material record for file %s in transaction: %v", fileHeader.Filename, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create database record for file %s", fileHeader.Filename)})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to create material record for file %s", fileHeader.Filename), err)
 			return // Rollback happens via defer
 		}
 		log.Printf("INFO: Created material record %s for file %s", material.ID, fileHeader.Filename)
@@ -384,8 +383,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			MaterialID: material.ID,
 		})
 		if linkErr != nil {
-			log.Printf("ERROR: Failed to link material %s to quiz %s: %v", material.ID, createdQuiz.ID, linkErr)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to link materials to quiz"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to link material %s to quiz %s", material.ID, createdQuiz.ID), linkErr)
 			return // Rollback happens via defer
 		}
 		processedMaterialCount++
@@ -411,8 +410,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		}
 		material, err := qtx.CreateMaterial(ctx, materialParams)
 		if err != nil {
-			log.Printf("ERROR: Failed to create material record for video %s in transaction: %v", url, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create database record for video %s", url)})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to create material record for video %s", url), err)
 			return // Rollback happens via defer
 		}
 
@@ -422,8 +421,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			MaterialID: material.ID,
 		})
 		if linkErr != nil {
-			log.Printf("ERROR: Failed to link video material %s to quiz %s: %v", material.ID, createdQuiz.ID, linkErr)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to link video materials to quiz"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to link video material %s to quiz %s", material.ID, createdQuiz.ID), linkErr)
 			return // Rollback happens via defer
 		}
 		processedMaterialCount++
@@ -462,8 +461,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 						// Description: pgtype.Text{}, // Optional description
 					})
 					if err != nil {
-						log.Printf("ERROR: Failed to create topic '%s' for user %s: %v", topicTitle, userID, err)
-						c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create topic '%s'", topicTitle)})
+						// Use handleErrorAndNotify
+						h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to create topic '%s'", topicTitle), err)
 						return
 					}
 					topicID = newTopic.ID
@@ -471,8 +470,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 					log.Printf("INFO: Created topic '%s' with ID %s for user %s", topicTitle, topicID, userID)
 				} else {
 					// Other database error
-					log.Printf("ERROR: Failed to get topic '%s' for user %s: %v", topicTitle, userID, err)
-					c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Database error checking topic '%s'", topicTitle)})
+					// Use handleErrorAndNotify
+					h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Database error checking topic '%s'", topicTitle), err)
 					return
 				}
 			} else {
@@ -490,8 +489,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			Question: geminiQuestion.Text,
 		})
 		if err != nil {
-			log.Printf("ERROR: Failed to create question for quiz %s: %v", createdQuiz.ID, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to save question"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to create question for quiz %s", createdQuiz.ID), err)
 			return
 		}
 
@@ -508,8 +507,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 				Explanation: pgtype.Text{String: geminiOption.Explanation, Valid: geminiOption.Explanation != ""}, // Add explanation from Gemini
 			})
 			if err != nil {
-				log.Printf("ERROR: Failed to create answer for question %s: %v", dbQuestion.ID, err)
-				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to save answer"})
+				// Use handleErrorAndNotify
+				h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to create answer for question %s", dbQuestion.ID), err)
 				return
 			}
 		}
@@ -517,9 +516,10 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		// Validate that exactly one correct answer was provided by Gemini
 		if correctAnswerCount != 1 {
 			// Log the problematic question structure for debugging
-			log.Printf("ERROR: Invalid number of correct answers (%d) for question from Gemini. Rolling back. Question Details: %+v", correctAnswerCount, geminiQuestion)
-			// No need to explicitly call Rollback, defer handles it. Just return error.
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Invalid question data received from AI: '%s'", geminiQuestion.Text)})
+			// Use handleErrorAndNotify
+			errInvalidAnswers := fmt.Errorf("invalid number of correct answers (%d) for question: %s", correctAnswerCount, geminiQuestion.Text)
+			log.Printf("ERROR: %v. Rolling back. Question Details: %+v", errInvalidAnswers, geminiQuestion)
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Invalid question data received from AI", errInvalidAnswers)
 			return
 		}
 	}
@@ -527,12 +527,16 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	// Commit the transaction
 	err = tx.Commit(ctx)
 	if err != nil {
-		log.Printf("ERROR: Failed to commit transaction for quiz %s: %v", createdQuiz.ID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to finalize saving quiz"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to commit transaction for quiz %s", createdQuiz.ID), err)
 		return
 	}
 
 	log.Printf("INFO: Successfully created quiz %s with %d questions for user %s", createdQuiz.ID, len(geminiResponse.Questions), userID)
+
+	// Calculate duration
+	duration := time.Since(startTime)
+	log.Printf("INFO: Quiz %s generation took %s", createdQuiz.ID, duration)
 
 	// Log quiz creation activity
 	h.logActivity(ctx, userID, db.ActivityActionQuizCreate,
@@ -542,14 +546,28 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			"title":            createdQuiz.Title,
 			"question_count":   len(geminiResponse.Questions),
 			"material_count":   processedMaterialCount,
-			"prompt_tokens":    promptTokens,    // Add token info
-			"candidate_tokens": candidateTokens, // Add token info
-			"total_tokens":     totalTokens,     // Add token info
-		}) // Add token details to the log
+			"prompt_tokens":    promptTokens,            // Add token info
+			"candidate_tokens": candidateTokens,         // Add token info
+			"total_tokens":     totalTokens,             // Add token info
+			"duration_ms":      duration.Milliseconds(), // Add duration
+		}) // Add token and duration details to the log
 
-	// Send Discord notification for quiz creation
-	h.sendDiscordNotification(fmt.Sprintf("📝 Quiz Created: '%s' (%d questions, %d materials, %d tokens used) by %s (%s)",
-		createdQuiz.Title, len(geminiResponse.Questions), processedMaterialCount, totalTokens, userName, userEmail))
+	// Send Discord notification for quiz creation using Embed
+	quizEmbed := DiscordEmbed{
+		Title: "📝 Quiz Created",
+		Color: 0x4CAF50, // Green color
+		Fields: []DiscordEmbedField{
+			{Name: "Title", Value: createdQuiz.Title, Inline: true},
+			{Name: "Questions", Value: fmt.Sprintf("%d", len(geminiResponse.Questions)), Inline: true},
+			{Name: "Materials", Value: fmt.Sprintf("%d", processedMaterialCount), Inline: true},
+			{Name: "Tokens Used", Value: fmt.Sprintf("%d", totalTokens), Inline: true},
+			{Name: "Time Taken", Value: fmt.Sprintf("%.2fs", duration.Seconds()), Inline: true},
+			{Name: "Created By", Value: fmt.Sprintf("%s (%s)", userName, userEmail), Inline: false},
+			{Name: "Quiz ID", Value: fmt.Sprintf("`%s`", createdQuiz.ID.String()), Inline: false},
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+	h.sendDiscordNotification(quizEmbed)
 
 	// 7. Return Response
 	c.JSON(http.StatusOK, gin.H{
@@ -566,8 +584,8 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 	// 1. Parse UUID
 	quizID, err := uuid.Parse(quizIDStr)
 	if err != nil {
-		log.Printf("ERROR: Invalid Quiz ID format '%s': %v", quizIDStr, err)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid Quiz ID format"})
+		// Use handleErrorAndNotify (userID is not available here, pass Nil)
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusBadRequest, fmt.Sprintf("Invalid Quiz ID format '%s'", quizIDStr), err)
 		return
 	}
 	log.Printf("INFO: Handling request for quiz ID: %s", quizID)
@@ -577,11 +595,11 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 	dbQuizData, err := h.DB.Queries.GetQuizByID(ctx, quizID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("WARN: Quiz not found: %s", quizID)
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Quiz not found"})
+			// Use handleErrorAndNotify (userID is not available here, pass Nil)
+			h.handleErrorAndNotify(c, uuid.Nil, http.StatusNotFound, fmt.Sprintf("Quiz not found: %s", quizID), err)
 		} else {
-			log.Printf("ERROR: Failed to get quiz %s: %v", quizID, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve quiz"})
+			// Use handleErrorAndNotify (userID is not available here, pass Nil)
+			h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, fmt.Sprintf("Failed to get quiz %s", quizID), err)
 		}
 		return
 	}
@@ -589,8 +607,8 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 	// 3. Fetch Questions for the Quiz
 	dbQuestions, err := h.DB.Queries.ListQuestionsByQuizID(ctx, quizID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) { // It's okay if a quiz has no questions yet
-		log.Printf("ERROR: Failed to get questions for quiz %s: %v", quizID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve quiz questions"})
+		// Use handleErrorAndNotify (userID is not available here, pass Nil)
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, fmt.Sprintf("Failed to get questions for quiz %s", quizID), err)
 		return
 	}
 	log.Printf("INFO: Found %d questions for quiz %s", len(dbQuestions), quizID)
@@ -679,15 +697,15 @@ func (h *Handler) HandleListUserQuizzes(c *gin.Context) {
 	// 1. Get User ID from context (set by AuthRequired middleware)
 	userIDValue, exists := c.Get("userID")
 	if !exists {
-		log.Printf("ERROR: User ID not found in context for listing quizzes")
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated or context missing user ID"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, "User ID not found in context for listing quizzes", errors.New("user not authenticated"))
 		return
 	}
 
 	userID, ok := userIDValue.(uuid.UUID)
 	if !ok {
-		log.Printf("ERROR: User ID in context is not of type uuid.UUID for listing quizzes")
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID type in context"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "User ID in context is not UUID for listing quizzes", errors.New("invalid user ID type in context"))
 		return
 	}
 	log.Printf("INFO: Handling request to list quizzes for user ID: %s", userID)
@@ -695,11 +713,11 @@ func (h *Handler) HandleListUserQuizzes(c *gin.Context) {
 	// 2. Fetch Quizzes from DB
 	quizzes, err := h.DB.Queries.ListQuizzesByCreator(ctx, pgtype.UUID{Bytes: userID, Valid: true})
 	if err != nil {
+		// Use handleErrorAndNotify
 		// It's not an error if the user simply hasn't created any quizzes yet.
 		// sql.ErrNoRows is not typically returned by List methods in sqlc, it returns an empty slice.
 		// So, we only log and return error for actual database problems.
-		log.Printf("ERROR: Failed to list quizzes for user %s: %v", userID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve quizzes"})
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to list quizzes for user %s", userID), err)
 		return
 	}
 
@@ -721,16 +739,18 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 	quizIDStr := c.Param("quizId")
 
 	// 1. Get User ID from context
+	var userID uuid.UUID // Declare userID
 	userIDValue, exists := c.Get("userID")
 	if !exists {
-		log.Printf("ERROR: User ID not found in context for deleting quiz %s", quizIDStr)
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, fmt.Sprintf("User ID not found in context for deleting quiz %s", quizIDStr), errors.New("user not authenticated"))
 		return
 	}
-	userID, ok := userIDValue.(uuid.UUID)
+	var ok bool
+	userID, ok = userIDValue.(uuid.UUID) // Assign to declared userID
 	if !ok {
-		log.Printf("ERROR: User ID in context is not UUID for deleting quiz %s", quizIDStr)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error: Invalid user ID type"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, fmt.Sprintf("User ID in context is not UUID for deleting quiz %s", quizIDStr), errors.New("invalid user ID type in context"))
 		return
 	}
 
@@ -758,8 +778,8 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 	// 2. Parse Quiz ID
 	quizID, err := uuid.Parse(quizIDStr)
 	if err != nil {
-		log.Printf("ERROR: Invalid Quiz ID format '%s' for deletion: %v", quizIDStr, err)
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid Quiz ID format"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, fmt.Sprintf("Invalid Quiz ID format '%s' for deletion", quizIDStr), err)
 		return
 	}
 	log.Printf("INFO: Handling request to delete quiz ID: %s for user ID: %s", quizID, userID)
@@ -768,27 +788,27 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 	dbQuiz, err := h.DB.Queries.GetQuizByID(ctx, quizID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			log.Printf("WARN: Quiz not found for deletion: %s", quizID)
-			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Quiz not found"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusNotFound, fmt.Sprintf("Quiz not found for deletion: %s", quizID), err)
 		} else {
-			log.Printf("ERROR: Failed to get quiz %s for ownership check during deletion: %v", quizID, err)
-			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve quiz details"})
+			// Use handleErrorAndNotify
+			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to get quiz %s for ownership check during deletion", quizID), err)
 		}
 		return
 	}
 
 	// Check if the CreatorID (which is pgtype.UUID) matches the userID from context
 	if !dbQuiz.CreatorID.Valid || dbQuiz.CreatorID.Bytes != userID {
-		log.Printf("WARN: User %s attempted to delete quiz %s owned by %s", userID, quizID, dbQuiz.CreatorID.Bytes)
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "You do not have permission to delete this quiz"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusForbidden, fmt.Sprintf("User %s attempted to delete quiz %s owned by %s", userID, quizID, dbQuiz.CreatorID.Bytes), errors.New("you do not have permission to delete this quiz"))
 		return
 	}
 
 	// 4. Delete the Quiz using the existing query
 	err = h.DB.Queries.DeleteQuiz(ctx, quizID)
 	if err != nil {
-		log.Printf("ERROR: Failed to delete quiz %s for user %s: %v", quizID, userID, err)
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete quiz"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to delete quiz %s", quizID), err)
 		return
 	}
 
@@ -800,8 +820,18 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 		pgtype.UUID{Bytes: quizID, Valid: true},
 		map[string]interface{}{"title": dbQuiz.Title}) // Include title from the fetched quiz
 
-	// Send Discord notification for quiz deletion
-	h.sendDiscordNotification(fmt.Sprintf("🗑️ Quiz Deleted: '%s' (ID: %s) by %s (%s)", dbQuiz.Title, quizID, userName, userEmail))
+	// Send Discord notification for quiz deletion using Embed
+	deleteEmbed := DiscordEmbed{
+		Title: "🗑️ Quiz Deleted",
+		Color: 0xF44336, // Red color
+		Fields: []DiscordEmbedField{
+			{Name: "Title", Value: dbQuiz.Title, Inline: true},
+			{Name: "Quiz ID", Value: fmt.Sprintf("`%s`", quizID.String()), Inline: true},
+			{Name: "Deleted By", Value: fmt.Sprintf("%s (%s)", userName, userEmail), Inline: false},
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+	}
+	h.sendDiscordNotification(deleteEmbed)
 
 	// 5. Return Success Response
 	c.Status(http.StatusNoContent) // 204 No Content is standard for successful DELETE

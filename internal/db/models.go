@@ -33,6 +33,7 @@ const (
 	ActivityActionTopicDelete        ActivityAction = "topic_delete"
 	ActivityActionTokenPurchase      ActivityAction = "token_purchase"
 	ActivityActionSubscriptionUpdate ActivityAction = "subscription_update"
+	ActivityActionError              ActivityAction = "error"
 )
 
 func (e *ActivityAction) Scan(src interface{}) error {
