@@ -28,7 +28,8 @@ CREATE TYPE activity_action AS ENUM (
     'topic_update',
     'topic_delete',
     'token_purchase',
-    'subscription_update'
+    'subscription_update',
+    'error'
 );
 CREATE TYPE activity_target_type AS ENUM ('quiz', 'question', 'answer', 'topic', 'material', 'user', 'quiz_attempt', 'subscription', 'purchase');
 

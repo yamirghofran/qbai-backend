@@ -1,7 +1,5 @@
 package models
 
-// TODO - UPDATE TO MATCH NEW SCHEMA
-
 import (
 	"time"
 

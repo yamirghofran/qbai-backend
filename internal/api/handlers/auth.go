@@ -10,6 +10,7 @@ import (
 	"log"    // Added for logging errors
 	"net/http"
 	"os"
+	"time"
 
 	"quizbuilderai/internal/db"
 
@@ -29,8 +30,8 @@ func (h *Handler) HandleGoogleLogin(c *gin.Context) {
 	stateBytes := make([]byte, 16)
 	_, err := rand.Read(stateBytes)
 	if err != nil {
-		log.Printf("ERROR: Failed to generate state: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate state"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Failed to generate state", err)
 		return
 	}
 	oauthStateString := base64.URLEncoding.EncodeToString(stateBytes)
@@ -38,8 +39,8 @@ func (h *Handler) HandleGoogleLogin(c *gin.Context) {
 	session.Set(OauthStateSessionKey, oauthStateString) // Use capitalized constant
 	err = session.Save()
 	if err != nil {
-		log.Printf("ERROR: Failed to save session: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Failed to save session before redirect", err)
 		return
 	}
 	log.Printf("DEBUG: Saved session state '%s' for session ID %s", oauthStateString, session.ID()) // Added logging
@@ -64,8 +65,8 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 	code := c.Query("code")
 	token, err := h.OauthConfig.Exchange(context.Background(), code)
 	if err != nil {
-		log.Printf("ERROR: Failed to exchange code: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Failed to exchange code", err)
 		return
 	}
 
@@ -78,15 +79,15 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 	client := h.OauthConfig.Client(context.Background(), token)
 	oauth2Service, err := oauth2api.NewService(context.Background(), option.WithHTTPClient(client))
 	if err != nil {
-		log.Printf("ERROR: Failed to create OAuth2 service: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create OAuth2 service"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Failed to create OAuth2 service", err)
 		return
 	}
 
 	userinfo, err := oauth2Service.Userinfo.V2.Me.Get().Do()
 	if err != nil {
-		log.Printf("ERROR: Failed to get user info: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user info"})
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Failed to get user info from Google", err)
 		return
 	}
 
@@ -110,8 +111,8 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 			}
 			dbUser, err = h.DB.Queries.CreateUser(ctx, createUserParams) // Corrected: Use h.DB.Queries
 			if err != nil {
-				log.Printf("ERROR: Failed to create user: %v", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user profile"})
+				// Use handleErrorAndNotify (userID is Nil as user creation failed)
+				h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Failed to create user profile", err)
 				return
 			}
 			log.Printf("INFO: Created user with ID %s for email %s", dbUser.ID, dbUser.Email) // Changed %d to %s for UUID
@@ -122,13 +123,23 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 				pgtype.UUID{Bytes: dbUser.ID, Valid: true},
 				map[string]interface{}{"email": dbUser.Email, "signup": true}) // Add signup flag
 
-			// Send Discord notification for signup
-			h.sendDiscordNotification(fmt.Sprintf("🎉 New Signup: %s (%s)", dbUser.Name.String, dbUser.Email))
+			// Send Discord notification for signup using Embed
+			signupEmbed := DiscordEmbed{
+				Title: "🎉 New Signup",
+				Color: 0x9C27B0, // Purple color
+				Fields: []DiscordEmbedField{
+					{Name: "Name", Value: dbUser.Name.String, Inline: true},
+					{Name: "Email", Value: dbUser.Email, Inline: true},
+					{Name: "User ID", Value: fmt.Sprintf("`%s`", dbUser.ID.String()), Inline: false},
+				},
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
+			h.sendDiscordNotification(signupEmbed)
 
 		} else {
 			// Other database error
-			log.Printf("ERROR: Failed to get user by email: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error checking user profile"})
+			// Use handleErrorAndNotify (userID is Nil as user lookup failed)
+			h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Database error checking user profile", err)
 			return
 		}
 	} else {
@@ -142,9 +153,19 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 			pgtype.UUID{Bytes: dbUser.ID, Valid: true},
 			map[string]interface{}{"email": dbUser.Email, "signup": false}) // No signup flag
 
-		// Send Discord notification for login (only if not a new user signup)
+		// Send Discord notification for login (only if not a new user signup) using Embed
 		if !isNewUser {
-			h.sendDiscordNotification(fmt.Sprintf("✅ User Login: %s (%s)", dbUser.Name.String, dbUser.Email))
+			loginEmbed := DiscordEmbed{
+				Title: "✅ User Login",
+				Color: 0x00BCD4, // Cyan color
+				Fields: []DiscordEmbedField{
+					{Name: "Name", Value: dbUser.Name.String, Inline: true},
+					{Name: "Email", Value: dbUser.Email, Inline: true},
+					{Name: "User ID", Value: fmt.Sprintf("`%s`", dbUser.ID.String()), Inline: false},
+				},
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
+			h.sendDiscordNotification(loginEmbed)
 		}
 
 		// Example update (if you have an UpdateUser method and want to refresh data):
@@ -187,8 +208,8 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 
 	err = session.Save()
 	if err != nil {
-		log.Printf("ERROR: Failed to save session after login: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save session"})
+		// Use handleErrorAndNotify (use dbUser.ID from the created/fetched user)
+		h.handleErrorAndNotify(c, dbUser.ID, http.StatusInternalServerError, "Failed to save session after login", err)
 		return
 	}
 
@@ -265,11 +286,10 @@ func (h *Handler) HandleLogout(c *gin.Context) {
 
 	err := session.Save()
 	if err != nil {
-		// Log the error but still attempt to respond
-		log.Printf("ERROR: Failed to save session during logout for user %s: %v", userID, err)
-		// Consider returning an error if session saving is critical
-		// c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear session"})
-		// return
+		// Use handleErrorAndNotify. It will log, notify, and abort.
+		// Pass the userID obtained earlier in the function.
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Failed to save session during logout", err)
+		return // Abort the request as per handleErrorAndNotify behavior
 	}
 
 	// Log logout activity if user ID was found
@@ -279,8 +299,18 @@ func (h *Handler) HandleLogout(c *gin.Context) {
 			pgtype.UUID{Bytes: userID, Valid: true},
 			nil) // No specific details needed for logout
 
-		// Send Discord notification for logout
-		h.sendDiscordNotification(fmt.Sprintf("🚪 User Logout: %s (%s)", userName, userEmail))
+		// Send Discord notification for logout using Embed
+		logoutEmbed := DiscordEmbed{
+			Title: "🚪 User Logout",
+			Color: 0x757575, // Grey color
+			Fields: []DiscordEmbedField{
+				{Name: "Name", Value: userName, Inline: true},
+				{Name: "Email", Value: userEmail, Inline: true},
+				{Name: "User ID", Value: fmt.Sprintf("`%s`", userID.String()), Inline: false},
+			},
+			Timestamp: time.Now().Format(time.RFC3339),
+		}
+		h.sendDiscordNotification(logoutEmbed)
 	}
 
 	// Instead of redirecting, send a success response.
