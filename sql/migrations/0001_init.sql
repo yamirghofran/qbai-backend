@@ -29,9 +29,10 @@ CREATE TYPE activity_action AS ENUM (
     'topic_delete',
     'token_purchase',
     'subscription_update',
-    'error'
+    'error',
+    'feedback_create'
 );
-CREATE TYPE activity_target_type AS ENUM ('quiz', 'question', 'answer', 'topic', 'material', 'user', 'quiz_attempt', 'subscription', 'purchase');
+CREATE TYPE activity_target_type AS ENUM ('quiz', 'question', 'answer', 'topic', 'material', 'user', 'quiz_attempt', 'subscription', 'purchase', 'feedback');
 
 -- sessions Table
 CREATE TABLE IF NOT EXISTS sessions (

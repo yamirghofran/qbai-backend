@@ -34,6 +34,7 @@ const (
 	ActivityActionTokenPurchase      ActivityAction = "token_purchase"
 	ActivityActionSubscriptionUpdate ActivityAction = "subscription_update"
 	ActivityActionError              ActivityAction = "error"
+	ActivityActionFeedbackCreate     ActivityAction = "feedback_create"
 )
 
 func (e *ActivityAction) Scan(src interface{}) error {
@@ -83,6 +84,7 @@ const (
 	ActivityTargetTypeQuizAttempt  ActivityTargetType = "quiz_attempt"
 	ActivityTargetTypeSubscription ActivityTargetType = "subscription"
 	ActivityTargetTypePurchase     ActivityTargetType = "purchase"
+	ActivityTargetTypeFeedback     ActivityTargetType = "feedback"
 )
 
 func (e *ActivityTargetType) Scan(src interface{}) error {
@@ -238,6 +240,15 @@ type AttemptAnswer struct {
 	IsCorrect        pgtype.Bool `json:"is_correct"`
 	CreatedAt        time.Time   `json:"created_at"`
 	UpdatedAt        time.Time   `json:"updated_at"`
+}
+
+type Feedback struct {
+	ID        uuid.UUID   `json:"id"`
+	UserID    pgtype.UUID `json:"user_id"`
+	Content   string      `json:"content"`
+	Rating    pgtype.Int4 `json:"rating"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 type Material struct {

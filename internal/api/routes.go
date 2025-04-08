@@ -45,6 +45,9 @@ func SetupRoutes(router *gin.Engine, handler *handlers.Handler) { // Update hand
 			// Example:
 			// authorized.POST("/quizzes", handler.HandleCreateQuiz) // Create quiz manually (if needed)
 			// authorized.GET("/topics", handler.HandleGetTopics)
+
+			// --- Feedback Routes ---
+			authorized.POST("/feedback", handler.CreateFeedbackHandler) // Create new feedback
 		}
 	}
 
