@@ -3,11 +3,12 @@ package handlers
 import (
 	"bytes" // Added for Discord notification payload
 	"context"
-	"encoding/json" // Added for activity log details &amp; Discord payload
+	"encoding/json" // Added for activity log details & Discord payload
+	"errors"        // Added for creating validation errors
+	"fmt"           // Added for error formatting & Sprintf
 
-	// Added for error creation in handleErrorAndNotify if needed (though usually passed in)
-	"fmt"      // Added for error formatting &amp; Sprintf
-	"io"       // Added for Discord response reading
+	"io" // Added for Discord response reading
+	// "io" // Duplicate import, already imported above
 	"log"      // Added for logging errors
 	"net/http" // Added for Discord notification &amp; status codes
 	"time"     // Added for response struct timestamps &amp; Discord timeout
@@ -241,4 +242,107 @@ func (h *Handler) logActivity(ctx context.Context, userID uuid.UUID, action db.A
 	} else {
 		log.Printf("INFO: Activity logged for user %s: %s", userID, action)
 	}
+}
+
+// --- Feedback Handlers ---
+
+// CreateFeedbackRequest defines the structure for the feedback creation request body.
+type CreateFeedbackRequest struct {
+	Content string `json:"content" binding:"required"`
+	Rating  int32  `json:"rating" binding:"required,min=1,max=5"` // Assuming a 1-5 rating scale
+}
+
+// CreateFeedbackHandler handles the creation of new feedback.
+func (h *Handler) CreateFeedbackHandler(c *gin.Context) {
+	// 1. Get User Profile from context (set by AuthRequired middleware)
+	userProfileValue, exists := c.Get("userProfile") // Use context key "userProfile"
+	if !exists {
+		// This should ideally not happen if AuthRequired middleware ran successfully
+		log.Printf("ERROR: userProfile not found in context for CreateFeedbackHandler")
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, "Get User Profile from Context", errors.New("user profile not found in context"))
+		return
+	}
+	userProfile, ok := userProfileValue.(UserProfile) // Direct type assertion
+	if !ok {
+		// This indicates a programming error (wrong type set in middleware or retrieved here)
+		log.Printf("ERROR: Invalid user profile type in context for CreateFeedbackHandler")
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Get User Profile from Context", errors.New("invalid user profile type in context"))
+		return
+	}
+	// No need to check DatabaseID == uuid.Nil here, as AuthRequired middleware already did that.
+	// Removed extra closing brace that caused syntax error
+	userID := userProfile.DatabaseID
+
+	// 2. Bind and Validate Request Body
+	var req CreateFeedbackRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, "Bind Feedback Request", err)
+		return
+	}
+
+	// Basic validation (already handled by binding tags, but good practice)
+	if req.Content == "" {
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, "Validate Feedback Request", errors.New("feedback content cannot be empty"))
+		return
+	}
+	if req.Rating < 1 || req.Rating > 5 {
+		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, "Validate Feedback Request", errors.New("rating must be between 1 and 5"))
+		return
+	}
+
+	// 3. Prepare Database Parameters
+	params := db.CreateFeedbackParams{
+		UserID:  pgtype.UUID{Bytes: userID, Valid: true},
+		Content: req.Content, // Assuming sqlc generated this as string
+		Rating:  pgtype.Int4{Int32: req.Rating, Valid: true},
+	}
+
+	// 4. Execute Database Query
+	feedback, err := h.DB.Queries.CreateFeedback(c.Request.Context(), params)
+	if err != nil {
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Create Feedback in DB", err)
+		return
+	}
+
+	// 5. Log Activity
+	// Convert feedback.ID (uuid.UUID) to pgtype.UUID for logging
+	pgFeedbackID := pgtype.UUID{Bytes: feedback.ID, Valid: true}
+	h.logActivity(c.Request.Context(), userID, db.ActivityActionFeedbackCreate,
+		db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeFeedback, Valid: true},
+		pgFeedbackID, // Use the converted pgtype.UUID
+		map[string]interface{}{
+			"feedback_id": feedback.ID.String(), // Use feedback.ID directly
+			"rating":      feedback.Rating.Int32,
+			"content_preview": func() string { // Add a preview of the content
+				if len(req.Content) > 50 {
+					return req.Content[:50] + "..."
+				}
+				return req.Content
+			}(),
+		})
+
+	// 6. Send Discord Notification
+	discordEmbed := DiscordEmbed{
+		Title: "📝 New Feedback Submitted",
+		Color: 0x00FF00, // Green
+		Fields: []DiscordEmbedField{
+			{Name: "User", Value: fmt.Sprintf("%s (`%s`)", userProfile.Name, userID.String()), Inline: false},
+			{Name: "Rating", Value: fmt.Sprintf("%d / 5", feedback.Rating.Int32), Inline: true},
+			{Name: "Content", Value: req.Content, Inline: false},
+		},
+		Timestamp: time.Now().Format(time.RFC3339),
+		Footer: &DiscordEmbedFooter{
+			Text: "Feedback submitted via QuizBuilderAI",
+		},
+	}
+	if userProfile.Picture != "" {
+		discordEmbed.Author = &DiscordEmbedAuthor{
+			Name:    userProfile.Name,
+			IconURL: userProfile.Picture,
+		}
+	}
+	h.sendDiscordNotification(discordEmbed)
+
+	// 7. Return Success Response
+	c.JSON(http.StatusCreated, feedback)
 }

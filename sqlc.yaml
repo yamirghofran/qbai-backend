@@ -14,6 +14,7 @@ sql:
     - "sql/queries/attempt_answers.sql"
     - "sql/queries/activity_logs.sql"
     - "sql/queries/tokens.sql"
+    - "sql/queries/feedbacks.sql"
     schema: "sql/migrations/"
     gen:
       go:

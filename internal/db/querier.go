@@ -16,6 +16,7 @@ type Querier interface {
 	CalculateQuizAttemptScore(ctx context.Context, quizAttemptID uuid.UUID) (int64, error)
 	CreateActivityLog(ctx context.Context, arg CreateActivityLogParams) (ActivityLog, error)
 	CreateAnswer(ctx context.Context, arg CreateAnswerParams) (Answer, error)
+	CreateFeedback(ctx context.Context, arg CreateFeedbackParams) (Feedback, error)
 	CreateMaterial(ctx context.Context, arg CreateMaterialParams) (Material, error)
 	CreateQuestion(ctx context.Context, arg CreateQuestionParams) (Question, error)
 	CreateQuiz(ctx context.Context, arg CreateQuizParams) (Quize, error)
@@ -28,6 +29,7 @@ type Querier interface {
 	DeleteActivityLog(ctx context.Context, id uuid.UUID) error
 	DeleteAnswer(ctx context.Context, id uuid.UUID) error
 	DeleteAnswersByQuestionID(ctx context.Context, questionID uuid.UUID) error
+	DeleteFeedback(ctx context.Context, id uuid.UUID) error
 	DeleteMaterial(ctx context.Context, id uuid.UUID) error
 	DeleteQuestion(ctx context.Context, id uuid.UUID) error
 	DeleteQuiz(ctx context.Context, id uuid.UUID) error
@@ -38,6 +40,7 @@ type Querier interface {
 	GetAnswerByID(ctx context.Context, id uuid.UUID) (Answer, error)
 	GetAnswerCorrectness(ctx context.Context, id uuid.UUID) (bool, error)
 	GetAttemptAnswer(ctx context.Context, arg GetAttemptAnswerParams) (AttemptAnswer, error)
+	GetFeedback(ctx context.Context, id uuid.UUID) (Feedback, error)
 	GetMaterialByID(ctx context.Context, id uuid.UUID) (Material, error)
 	GetQuestionByID(ctx context.Context, id uuid.UUID) (Question, error)
 	GetQuizAttempt(ctx context.Context, id uuid.UUID) (QuizAttempt, error)
@@ -64,6 +67,7 @@ type Querier interface {
 	ListAnswers(ctx context.Context) ([]Answer, error)
 	ListAnswersByQuestionID(ctx context.Context, questionID uuid.UUID) ([]Answer, error)
 	ListAttemptAnswersByAttempt(ctx context.Context, quizAttemptID uuid.UUID) ([]AttemptAnswer, error)
+	ListFeedbacks(ctx context.Context) ([]Feedback, error)
 	ListMaterialIDsByQuizID(ctx context.Context, quizID uuid.UUID) ([]uuid.UUID, error)
 	ListMaterials(ctx context.Context) ([]Material, error)
 	ListMaterialsByUserID(ctx context.Context, userID uuid.UUID) ([]Material, error)
@@ -98,6 +102,7 @@ type Querier interface {
 	UnlinkTopicFromAllQuizes(ctx context.Context, topicID uuid.UUID) error
 	// Or some other defined order
 	UpdateAnswer(ctx context.Context, arg UpdateAnswerParams) (Answer, error)
+	UpdateFeedback(ctx context.Context, arg UpdateFeedbackParams) (Feedback, error)
 	UpdateMaterial(ctx context.Context, arg UpdateMaterialParams) (Material, error)
 	UpdateQuestion(ctx context.Context, arg UpdateQuestionParams) (Question, error)
 	UpdateQuiz(ctx context.Context, arg UpdateQuizParams) (Quize, error)
