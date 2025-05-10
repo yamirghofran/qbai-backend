@@ -28,7 +28,7 @@ const QuizPrompt = `Generate a comprehensive multiple-choice quiz based on the c
 Follow these requirements exactly:
 
 1. Create a descriptive title for the quiz that accurately reflects the main subject matter of the documents
-2. Create questions covering ALL main topics and subtopics in the documents, ensuring no significant concept is omitted. Include the topic for each question (so that questions can be grouped by topic later.)
+2. Create questions covering ALL main topics and subtopics in the documents, ensuring no significant concept is omitted. Include the topic for each question (so that questions can be grouped by topic later.). DON'T reference the documents in the questions or options. The questions should be self-contained and understandable without needing to refer back to the documents.
 3. Include a balanced distribution of question types:
    - Basic factual recall questions
    - Comprehension questions that require understanding concepts
@@ -46,7 +46,7 @@ Follow these requirements exactly:
    - Underlying mechanisms or reasons behind facts
    - How concepts interact in complex systems
    - Potential exceptions or limitations to stated principles
-5. Each question must have exactly 4 options with exactly one correct answer
+5. Each question must have exactly 4 options with EXACTLY ONE correct answer
 6. For EACH answer option:
    - Provide a concise "explanation" field detailing WHY the option is correct OR incorrect based on the source documents. Don't state "This is incorrect/correct". Just say the explanation. e.g."Gravity was discovered by Isaac Newton"
    - Make incorrect options (distractors) highly plausible by using common misconceptions or partial understandings.
@@ -77,7 +77,7 @@ const (
 	// MaxInlineSize is the maximum size for inline PDF data (20MB)
 	MaxInlineSize = 20 * 1024 * 1024
 	// ModelName is the Gemini model to use
-	ModelName = "gemini-2.0-flash"
+	ModelName = "gemini-2.5-flash-preview-04-17"
 )
 
 // Client wraps the Gemini client
