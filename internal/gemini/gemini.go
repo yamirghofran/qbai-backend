@@ -541,9 +541,25 @@ func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part) (*models.
 		if err := decoder.Decode(&quizResponse); err != nil {
 			log.Printf("DEBUG: Raw JSON text received (attempt %d) before parse error: %s", attempts+1, jsonText)
 			fmt.Printf("Invalid JSON (attempt %d): %s\n", attempts+1, jsonText)
-			lastErr = fmt.Errorf("failed to parse JSON response (attempt %d): %w. Raw text logged.", attempts+1, err)
-			time.Sleep(2 * time.Second)
-			continue
+
+			// Attempt to extract from partial JSON if it's a syntax error (like EOF)
+			if strings.Contains(err.Error(), "unexpected EOF") || strings.Contains(err.Error(), "syntax error") {
+				log.Printf("WARN: JSON parsing failed (attempt %d), attempting to extract from partial JSON: %v", attempts+1, err)
+				partialQuiz := extractValidQuestionsFromPartialJSON(jsonText)
+				if partialQuiz != nil && len(partialQuiz.Questions) > 0 {
+					log.Printf("INFO: Successfully extracted %d questions from partial JSON (attempt %d)", len(partialQuiz.Questions), attempts+1)
+					quizResponse = *partialQuiz // Use the partially recovered quiz
+				} else {
+					log.Printf("WARN: Could not extract any valid questions from partial JSON (attempt %d)", attempts+1)
+					lastErr = fmt.Errorf("failed to parse JSON response (attempt %d) and partial extraction failed: %w. Raw text logged", attempts+1, err)
+					time.Sleep(2 * time.Second)
+					continue
+				}
+			} else {
+				lastErr = fmt.Errorf("failed to parse JSON response (attempt %d): %w. Raw text logged", attempts+1, err)
+				time.Sleep(2 * time.Second)
+				continue
+			}
 		}
 
 		if len(quizResponse.Questions) == 0 {
