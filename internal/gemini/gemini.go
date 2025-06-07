@@ -9,13 +9,12 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"quizbuilderai/internal/models"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"quizbuilderai/internal/models"
 
 	"github.com/google/generative-ai-go/genai"
 	"github.com/google/uuid"
@@ -472,7 +471,7 @@ func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part) (*models.
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 
-	c.model.SetTemperature(0.2)
+	c.model.SetTemperature(0.95)
 	c.model.SetTopK(40)
 	c.model.SetTopP(0.95)
 	c.model.SetMaxOutputTokens(int32(8192))
