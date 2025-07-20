@@ -76,7 +76,7 @@ const (
 	// MaxInlineSize is the maximum size for inline PDF data (20MB)
 	MaxInlineSize = 20 * 1024 * 1024
 	// ModelName is the Gemini model to use
-	ModelName = "gemini-2.5-flash-preview-04-17"
+	ModelName = "gemini-2.0-flash"
 )
 
 // Client wraps the Gemini client
