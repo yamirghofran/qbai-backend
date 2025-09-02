@@ -24,6 +24,8 @@ import (
 // QuizPrompt is the prompt used to generate quizzes
 const QuizPrompt = `Generate a comprehensive multiple-choice quiz based on the content of these documents. Make sure to finish your response (the questions in proper indicated json format) before you run out of tokens. Basically finish your response ALWAYS or the world gets destroyed.
 
+IMPORTANT: If the provided material is already in a quiz format, then simply format the material as a quiz in the JSON schema provided, filling in the missing information (e.g. if there are only questions and options, you have to determine which one is the correct one and also create the explanations for the options.)
+
 Follow these requirements exactly:
 
 1. Create a descriptive title for the quiz that accurately reflects the main subject matter of the documents
