@@ -272,10 +272,10 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		return
 	}
 
-	// 5. Call Gemini to generate the quiz
-	log.Printf("INFO: Calling Gemini to process %d documents for user %s", len(documentFiles), userID)
-	// Receive token counts from ProcessDocuments
-	geminiResponse, promptTokens, candidateTokens, totalTokens, err := h.Gemini.ProcessDocuments(ctx, documentFiles)
+	// 5. Call Gemini to generate the quiz using concurrent processing
+	log.Printf("INFO: Calling Gemini to process %d documents for user %s (using concurrent generation)", len(documentFiles), userID)
+	// Receive token counts from ProcessDocumentsConcurrent
+	geminiResponse, promptTokens, candidateTokens, totalTokens, err := h.Gemini.ProcessDocumentsConcurrent(ctx, documentFiles)
 	if err != nil {
 		// Use handleErrorAndNotify
 		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Gemini processing failed", err)

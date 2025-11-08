@@ -86,3 +86,20 @@ type UploadResponse struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+// GeminiQuestionsOnlyResponse for the first LLM call (questions and topics only)
+type GeminiQuestionsOnlyResponse struct {
+	Title     string                         `json:"title"`
+	Questions []GeminiQuestionWithoutOptions `json:"questions"`
+}
+
+// GeminiQuestionWithoutOptions represents a question without options
+type GeminiQuestionWithoutOptions struct {
+	Text  string `json:"text"`
+	Topic string `json:"topic"`
+}
+
+// GeminiOptionsResponse for the per-question LLM calls
+type GeminiOptionsResponse struct {
+	Options []GeminiOption `json:"options"`
+}
