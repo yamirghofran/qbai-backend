@@ -21,13 +21,31 @@ import (
 	"google.golang.org/api/option"
 )
 
-// QuizPrompt is the prompt used to generate quizzes
-const QuizPrompt = `Generate a comprehensive multiple-choice quiz based on the content of these documents.
+// BuildQuizPrompt generates a customized prompt based on optional parameters
+func BuildQuizPrompt(maxQuestions *int, difficulty *string, customPrompt *string) string {
+	basePrompt := `Generate a comprehensive multiple-choice quiz based on the content of these documents.
 
 Follow these requirements exactly:
 
-1. Create a descriptive title for the quiz that accurately reflects the main subject matter of the documents
-2. Create questions covering ALL main topics and subtopics in the documents, ensuring no significant concept is omitted. Include the topic for each question (so that questions can be grouped by topic later.). DON'T reference the documents in the questions or options. The questions should be self-contained and understandable without needing to refer back to the documents.
+1. Create a descriptive title for the quiz that accurately reflects the main subject matter of the documents`
+
+	// Add max questions constraint if provided
+	if maxQuestions != nil && *maxQuestions > 0 {
+		basePrompt += fmt.Sprintf(`
+2. Create UP TO %d questions covering main topics and subtopics in the documents`, *maxQuestions)
+	} else {
+		basePrompt += `
+2. Create questions covering ALL main topics and subtopics in the documents`
+	}
+
+	basePrompt += `, ensuring no significant concept is omitted. Include the topic for each question (so that questions can be grouped by topic later.). DON'T reference the documents in the questions or options. The questions should be self-contained and understandable without needing to refer back to the documents.`
+
+	// Add difficulty-specific instructions if provided
+	if difficulty != nil && *difficulty != "" {
+		basePrompt += "\n" + getDifficultyInstructions(*difficulty)
+	} else {
+		// Use default balanced distribution
+		basePrompt += `
 3. Include a balanced distribution of question types:
    - Basic factual recall questions
    - Comprehension questions that require understanding concepts
@@ -39,7 +57,19 @@ Follow these requirements exactly:
      * Evaluating implications or consequences of key ideas
      * Comparing competing perspectives or approaches
      * Predicting outcomes based on document principles
-     * Identifying unstated assumptions underlying concepts
+     * Identifying unstated assumptions underlying concepts`
+	}
+
+	// Add custom prompt if provided
+	if customPrompt != nil && *customPrompt != "" {
+		basePrompt += fmt.Sprintf(`
+
+SPECIAL INSTRUCTIONS FROM USER:
+%s`, *customPrompt)
+	}
+
+	// Continue with the rest of the standard requirements
+	basePrompt += `
 4. For analytical questions, prioritize second and third-order thinking by asking about:
    - "What would happen if..." scenarios
    - Underlying mechanisms or reasons behind facts
@@ -69,8 +99,69 @@ Format your response as a JSON object with the following structure:
     },
     ...more questions...
   ]
+}`
+
+	return basePrompt
 }
-`
+
+// getDifficultyInstructions returns difficulty-specific instructions
+func getDifficultyInstructions(difficulty string) string {
+	switch strings.ToLower(difficulty) {
+	case "easy":
+		return `3. DIFFICULTY LEVEL: Easy
+   - Focus primarily on basic factual recall and simple comprehension
+   - Use straightforward, clear language
+   - Questions should test fundamental concepts and definitions
+   - Correct answers should be clearly identifiable to someone who studied the material
+   - Distractors should be plausible but obviously incorrect to someone familiar with the content
+   - Avoid complex multi-step reasoning or deep analysis`
+
+	case "medium":
+		return `3. DIFFICULTY LEVEL: Medium
+   - Balance between factual recall (40%) and application/comprehension (60%)
+   - Include questions that require understanding relationships between concepts
+   - Some questions should require applying knowledge to new but straightforward scenarios
+   - Use clear language but test deeper understanding than surface-level facts
+   - Distractors should be plausible and require careful thinking to eliminate
+   - Include some analytical questions but keep reasoning steps manageable`
+
+	case "hard":
+		return `3. DIFFICULTY LEVEL: Hard
+   - Emphasize application (30%), analysis (40%), and synthesis (30%)
+   - Include complex scenarios requiring multiple steps of reasoning
+   - Test deep understanding and ability to connect disparate concepts
+   - Questions should require integration of knowledge from different sections
+   - Distractors should be highly plausible, representing sophisticated misconceptions
+   - Include edge cases and situations requiring careful consideration
+   - Minimize simple recall questions`
+
+	case "extreme":
+		return `3. DIFFICULTY LEVEL: Extreme
+   - Focus heavily on synthesis, evaluation, and advanced application
+   - Questions should test edge cases, exceptions, and nuanced understanding
+   - Require integration of multiple complex concepts simultaneously
+   - Include questions about unstated assumptions, implications, and predictions
+   - Test ability to evaluate competing approaches and identify subtle flaws
+   - Distractors should differ only in nuanced details that require expert-level understanding
+   - All options should appear correct to someone with only surface-level knowledge
+   - Avoid simple factual recall entirely`
+
+	default:
+		// Return default balanced distribution
+		return `3. Include a balanced distribution of question types:
+   - Basic factual recall questions
+   - Comprehension questions that require understanding concepts
+   - Application/analysis questions that require:
+     * Applying principles to new scenarios
+     * Analyzing relationships between concepts
+     * Connecting ideas across different sections
+   - Synthesis/evaluation questions that require:
+     * Evaluating implications or consequences of key ideas
+     * Comparing competing perspectives or approaches
+     * Predicting outcomes based on document principles
+     * Identifying unstated assumptions underlying concepts`
+	}
+}
 
 const (
 	// MaxInlineSize is the maximum size for inline PDF data (20MB)
@@ -122,7 +213,7 @@ func (c *Client) Close() {
 // ProcessDocuments processes multiple document files and generates a quiz
 // It now processes files in chunks concurrently and returns aggregated token counts.
 // Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
 	// Add a timeout to the context
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
@@ -154,7 +245,7 @@ func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile) (*m
 			defer wg.Done()
 			for chunk := range fileChunks {
 				// Process each chunk of files, receive quiz and tokens
-				quizResponse, pTokens, cTokens, tTokens, err := c.processChunk(ctx, chunk)
+				quizResponse, pTokens, cTokens, tTokens, err := c.processChunk(ctx, chunk, maxQuestions, difficulty, customPrompt)
 				if err != nil {
 					errChan <- fmt.Errorf("failed to process chunk: %w", err)
 					// Send zero tokens if chunk processing failed entirely before Gemini call
@@ -228,7 +319,7 @@ func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile) (*m
 
 // processChunk processes a chunk of document files and generates a quiz response.
 // Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) processChunk(ctx context.Context, files []DocumentFile) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+func (c *Client) processChunk(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
 	totalSize := int64(0)
 	for _, file := range files {
 		totalSize += file.Size
@@ -236,21 +327,21 @@ func (c *Client) processChunk(ctx context.Context, files []DocumentFile) (*model
 
 	if len(files) > 1 && totalSize > MaxInlineSize/2 {
 		// processFilesIndividually now returns token counts
-		return c.processFilesIndividually(ctx, files)
+		return c.processFilesIndividually(ctx, files, maxQuestions, difficulty, customPrompt)
 	}
 
 	if totalSize > MaxInlineSize {
 		// processWithFileAPI now returns token counts
-		return c.processWithFileAPI(ctx, files)
+		return c.processWithFileAPI(ctx, files, maxQuestions, difficulty, customPrompt)
 	}
 
 	// processInline now returns token counts
-	return c.processInline(ctx, files)
+	return c.processInline(ctx, files, maxQuestions, difficulty, customPrompt)
 }
 
 // processFilesIndividually processes files in small batches and combines the results
 // Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentFile) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
 	batches := createFileBatches(files, MaxInlineSize/4)
 
 	maxConcurrent := 15
@@ -271,7 +362,7 @@ func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentF
 			defer cancel()
 
 			// Receive all 5 return values from processChunk
-			quizResponse, pTokens, cTokens, tTokens, err := c.processChunk(batchCtx, batchFiles)
+			quizResponse, pTokens, cTokens, tTokens, err := c.processChunk(batchCtx, batchFiles, maxQuestions, difficulty, customPrompt)
 			if err != nil {
 				fileNames := make([]string, len(batchFiles))
 				for i, f := range batchFiles {
@@ -376,9 +467,10 @@ func createFileBatches(files []DocumentFile, maxBatchSize int64) [][]DocumentFil
 }
 
 // Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) processInline(ctx context.Context, files []DocumentFile) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+func (c *Client) processInline(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
 	parts := []genai.Part{}
-	parts = append(parts, genai.Text(QuizPrompt))
+	prompt := BuildQuizPrompt(maxQuestions, difficulty, customPrompt)
+	parts = append(parts, genai.Text(prompt))
 
 	for _, file := range files {
 		data, err := os.ReadFile(file.Path)
@@ -395,11 +487,11 @@ func (c *Client) processInline(ctx context.Context, files []DocumentFile) (*mode
 	if len(files) == 0 {
 		return nil, 0, 0, 0, fmt.Errorf("no files provided for processing")
 	}
-	return c.generateQuiz(ctx, parts)
+	return c.generateQuiz(ctx, parts, maxQuestions, difficulty, customPrompt)
 }
 
 // Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) processWithFileAPI(ctx context.Context, files []DocumentFile) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+func (c *Client) processWithFileAPI(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
 	if len(files) == 0 {
 		return nil, 0, 0, 0, fmt.Errorf("no files provided for processing")
 	}
@@ -449,12 +541,13 @@ func (c *Client) processWithFileAPI(ctx context.Context, files []DocumentFile) (
 		return nil, 0, 0, 0, fmt.Errorf("no files were successfully uploaded")
 	}
 
-	parts := []genai.Part{genai.Text(QuizPrompt)}
+	prompt := BuildQuizPrompt(maxQuestions, difficulty, customPrompt)
+	parts := []genai.Part{genai.Text(prompt)}
 	for _, fileData := range fileDataList {
 		parts = append(parts, fileData)
 	}
 
-	quiz, pTokens, cTokens, tTokens, err := c.generateQuiz(ctx, parts)
+	quiz, pTokens, cTokens, tTokens, err := c.generateQuiz(ctx, parts, maxQuestions, difficulty, customPrompt)
 
 	// Clean up uploaded files
 	for _, fileData := range fileDataList {
@@ -467,7 +560,7 @@ func (c *Client) processWithFileAPI(ctx context.Context, files []DocumentFile) (
 
 // generateQuiz sends the request to Gemini and parses the response
 // Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
 
@@ -485,7 +578,8 @@ func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part) (*models.
 		if attempts > 0 {
 			c.model.SetMaxOutputTokens(int32(4096 - attempts*1000))
 			maxQs := 50 - attempts*15
-			limitedPrompt := fmt.Sprintf("%s\n\nIMPORTANT: Due to size constraints, please limit your response to no more than %d questions.", QuizPrompt, maxQs)
+			adjustedMax := &maxQs
+			limitedPrompt := BuildQuizPrompt(adjustedMax, difficulty, customPrompt)
 			for i, part := range parts {
 				if _, ok := part.(genai.Text); ok {
 					parts[i] = genai.Text(limitedPrompt)

@@ -9,7 +9,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
-	"time" // Added for response struct timestamps
+	"strconv" // Added for parsing integer parameters
+	"strings" // Added for string manipulation
+	"time"    // Added for response struct timestamps
 
 	"quizbuilderai/internal/db"
 	"quizbuilderai/internal/gemini"
@@ -119,6 +121,65 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		// Use handleErrorAndNotify
 		h.handleErrorAndNotify(c, userID, http.StatusBadRequest, "Failed to parse multipart form", err)
 		return
+	}
+
+	// Parse optional quiz customization parameters
+	var maxQuestions *int
+	var difficulty *string
+	var customPrompt *string
+
+	// Parse max_questions
+	if maxQStr := c.Request.FormValue("max_questions"); maxQStr != "" {
+		maxQ, err := strconv.Atoi(maxQStr)
+		if err != nil {
+			h.handleErrorAndNotify(c, userID, http.StatusBadRequest,
+				"Invalid max_questions parameter: must be a positive integer", err)
+			return
+		}
+		if maxQ < 1 {
+			h.handleErrorAndNotify(c, userID, http.StatusBadRequest,
+				"Invalid max_questions parameter: must be at least 1",
+				errors.New("max_questions must be positive"))
+			return
+		}
+		if maxQ > 200 {
+			h.handleErrorAndNotify(c, userID, http.StatusBadRequest,
+				"Invalid max_questions parameter: cannot exceed 200",
+				errors.New("max_questions too large"))
+			return
+		}
+		maxQuestions = &maxQ
+		log.Printf("INFO: User %s requested max %d questions", userID, maxQ)
+	}
+
+	// Parse difficulty
+	if diffStr := c.Request.FormValue("difficulty"); diffStr != "" {
+		validDifficulties := []string{"easy", "medium", "hard", "extreme"}
+		diffLower := strings.ToLower(strings.TrimSpace(diffStr))
+		if !contains(validDifficulties, diffLower) {
+			h.handleErrorAndNotify(c, userID, http.StatusBadRequest,
+				fmt.Sprintf("Invalid difficulty '%s'. Must be one of: %s",
+					diffStr, strings.Join(validDifficulties, ", ")),
+				errors.New("invalid difficulty level"))
+			return
+		}
+		difficulty = &diffLower
+		log.Printf("INFO: User %s requested difficulty: %s", userID, diffLower)
+	}
+
+	// Parse custom_prompt
+	if customStr := c.Request.FormValue("custom_prompt"); customStr != "" {
+		trimmed := strings.TrimSpace(customStr)
+		if len(trimmed) > 1000 {
+			h.handleErrorAndNotify(c, userID, http.StatusBadRequest,
+				"Custom prompt too long: maximum 1000 characters",
+				errors.New("custom_prompt exceeds length limit"))
+			return
+		}
+		if len(trimmed) > 0 {
+			customPrompt = &trimmed
+			log.Printf("INFO: User %s provided custom prompt (length: %d)", userID, len(trimmed))
+		}
 	}
 
 	// Structure to hold info about uploaded files for later processing (DB)
@@ -273,9 +334,10 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	}
 
 	// 5. Call Gemini to generate the quiz
-	log.Printf("INFO: Calling Gemini to process %d documents for user %s", len(documentFiles), userID)
+	log.Printf("INFO: Calling Gemini to process %d documents for user %s (maxQ: %v, difficulty: %v, custom: %v)",
+		len(documentFiles), userID, maxQuestions, difficulty, customPrompt != nil)
 	// Receive token counts from ProcessDocuments
-	geminiResponse, promptTokens, candidateTokens, totalTokens, err := h.Gemini.ProcessDocuments(ctx, documentFiles)
+	geminiResponse, promptTokens, candidateTokens, totalTokens, err := h.Gemini.ProcessDocuments(ctx, documentFiles, maxQuestions, difficulty, customPrompt)
 	if err != nil {
 		// Use handleErrorAndNotify
 		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Gemini processing failed", err)
@@ -543,14 +605,17 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		db.NullActivityTargetType{ActivityTargetType: db.ActivityTargetTypeQuiz, Valid: true},
 		pgtype.UUID{Bytes: createdQuiz.ID, Valid: true},
 		map[string]interface{}{
-			"title":            createdQuiz.Title,
-			"question_count":   len(geminiResponse.Questions),
-			"material_count":   processedMaterialCount,
-			"prompt_tokens":    promptTokens,            // Add token info
-			"candidate_tokens": candidateTokens,         // Add token info
-			"total_tokens":     totalTokens,             // Add token info
-			"duration_ms":      duration.Milliseconds(), // Add duration
-		}) // Add token and duration details to the log
+			"title":             createdQuiz.Title,
+			"question_count":    len(geminiResponse.Questions),
+			"material_count":    processedMaterialCount,
+			"prompt_tokens":     promptTokens,            // Add token info
+			"candidate_tokens":  candidateTokens,         // Add token info
+			"total_tokens":      totalTokens,             // Add token info
+			"duration_ms":       duration.Milliseconds(), // Add duration
+			"max_questions":     maxQuestions,            // Track user preference
+			"difficulty":        difficulty,              // Track difficulty level
+			"has_custom_prompt": customPrompt != nil,     // Track if custom prompt used
+		}) // Add token, duration, and customization details to the log
 
 	// Send Discord notification for quiz creation using Embed
 	quizEmbed := DiscordEmbed{
