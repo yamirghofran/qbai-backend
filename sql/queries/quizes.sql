@@ -44,6 +44,21 @@ SELECT * FROM quizes
 WHERE visibility = 'public'
 ORDER BY created_at DESC;
 
+-- name: ListPublicQuizesWithCreator :many
+SELECT
+    q.id,
+    q.title,
+    q.description,
+    q.visibility,
+    q.created_at,
+    q.updated_at,
+    u.name AS creator_name,
+    u.picture AS creator_picture
+FROM quizes q
+JOIN users u ON q.creator_id = u.id
+WHERE q.visibility = 'public'
+ORDER BY q.created_at DESC;
+
 -- name: UpdateQuiz :one
 UPDATE quizes
 SET

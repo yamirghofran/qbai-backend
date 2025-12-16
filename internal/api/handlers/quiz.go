@@ -798,6 +798,30 @@ func (h *Handler) HandleListUserQuizzes(c *gin.Context) {
 	c.JSON(http.StatusOK, quizzes)
 }
 
+// HandleListPublicQuizzes retrieves all public quizzes with creator information for the feed.
+func (h *Handler) HandleListPublicQuizzes(c *gin.Context) {
+	ctx := c.Request.Context()
+	log.Printf("INFO: Handling request to list public quizzes for feed")
+
+	// Fetch public quizzes with creator info
+	quizzes, err := h.DB.Queries.ListPublicQuizesWithCreator(ctx)
+	if err != nil {
+		// Use handleErrorAndNotify
+		h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, "Failed to list public quizzes", err)
+		return
+	}
+
+	// Handle case where no quizzes are found (returns empty slice, not error)
+	if quizzes == nil {
+		quizzes = []db.ListPublicQuizesWithCreatorRow{}
+	}
+
+	log.Printf("INFO: Found %d public quizzes for feed", len(quizzes))
+
+	// Return JSON response
+	c.JSON(http.StatusOK, quizzes)
+}
+
 // HandleDeleteQuiz handles the deletion of a specific quiz.
 func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 	ctx := c.Request.Context()

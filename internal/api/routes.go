@@ -19,7 +19,8 @@ func SetupRoutes(router *gin.Engine, handler *handlers.Handler) { // Update hand
 	api := router.Group("/api")
 	{
 		// Public API routes (e.g., status check)
-		api.GET("/auth/status", handler.HandleAuthStatus) // Check if user is logged in
+		api.GET("/auth/status", handler.HandleAuthStatus)         // Check if user is logged in
+		api.GET("/quizzes/feed", handler.HandleListPublicQuizzes) // Get public quizzes feed (no auth required)
 
 		// Protected API routes - Apply AuthRequired middleware
 		authorized := api.Group("/")
