@@ -10,13 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"quizbuilderai/internal/api"
+	"quizbuilderai/internal/db"
+	"quizbuilderai/internal/gemini"
 	"syscall"
 	"time"
 
-	"quizbuilderai/internal/api"
 	"quizbuilderai/internal/api/handlers" // Add import for the new handlers package
-	"quizbuilderai/internal/db"
-	"quizbuilderai/internal/gemini"
 
 	sessions "github.com/gin-contrib/sessions"           // Added base sessions import
 	gsessions "github.com/gin-contrib/sessions/postgres" // Re-added this import
