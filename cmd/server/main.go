@@ -13,6 +13,7 @@ import (
 	"quizbuilderai/internal/api"
 	"quizbuilderai/internal/db"
 	"quizbuilderai/internal/gemini"
+	"quizbuilderai/internal/models"
 	"syscall"
 	"time"
 
@@ -68,7 +69,7 @@ func init() {
 	// Register the *new* type from the handlers package. Gob needs to know about the concrete type.
 	// If sessions were saved with the old type path, clearing sessions might be necessary.
 	// For now, ensure the new type is registered correctly.
-	gob.Register(handlers.UserProfile{})
+	gob.Register(models.UserProfile{})
 
 	// --- Google OAuth Configuration ---
 	clientID := os.Getenv("GOOGLE_CLIENT_ID")

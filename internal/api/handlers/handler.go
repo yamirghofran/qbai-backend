@@ -15,6 +15,7 @@ import (
 
 	"quizbuilderai/internal/db"
 	"quizbuilderai/internal/gemini"
+	"quizbuilderai/internal/models"
 	"quizbuilderai/internal/youtube"
 
 	"github.com/gin-gonic/gin"       // Added for gin.Context, gin.H
@@ -23,19 +24,6 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// UserProfile stores information about the authenticated user.
-type UserProfile struct {
-	DatabaseID    uuid.UUID `json:"-"`  // Our internal DB UUID (omit from JSON response to client)
-	GoogleID      string    `json:"id"` // Google's ID (keep as 'id' in JSON)
-	Email         string    `json:"email"`
-	VerifiedEmail bool      `json:"verified_email"`
-	Name          string    `json:"name"`
-	GivenName     string    `json:"given_name"`
-	FamilyName    string    `json:"family_name"`
-	Picture       string    `json:"picture"`
-	Locale        string    `json:"locale"`
-}
-
 // Constants for session keys - keep these consistent
 // Exported constants start with an uppercase letter.
 const (
@@ -43,53 +31,6 @@ const (
 	ProfileSessionKey    = "profile"
 	discordWebhookURL    = "https://discord.com/api/webhooks/1356553549256986725/9v9vVxGCLQhvOJtMmC5MZKXdR-AiJuS_a_NTyo1U6ItTPM9kzcQusw31GxR3UvxmUYN3" // Added Discord Webhook URL (keep unexported if only used internally)
 )
-
-// Discord Embed Structures (based on documentation)
-type DiscordEmbedFooter struct {
-	Text    string `json:"text,omitempty"`
-	IconURL string `json:"icon_url,omitempty"`
-}
-
-type DiscordEmbedImage struct {
-	URL string `json:"url,omitempty"`
-}
-
-type DiscordEmbedThumbnail struct {
-	URL string `json:"url,omitempty"`
-}
-
-type DiscordEmbedAuthor struct {
-	Name    string `json:"name,omitempty"`
-	URL     string `json:"url,omitempty"`
-	IconURL string `json:"icon_url,omitempty"`
-}
-
-type DiscordEmbedField struct {
-	Name   string `json:"name"`
-	Value  string `json:"value"`
-	Inline bool   `json:"inline,omitempty"`
-}
-
-type DiscordEmbed struct {
-	Title       string                 `json:"title,omitempty"`
-	Description string                 `json:"description,omitempty"`
-	URL         string                 `json:"url,omitempty"`
-	Timestamp   string                 `json:"timestamp,omitempty"` // ISO8601 timestamp
-	Color       int                    `json:"color,omitempty"`     // Decimal color code
-	Footer      *DiscordEmbedFooter    `json:"footer,omitempty"`
-	Image       *DiscordEmbedImage     `json:"image,omitempty"`
-	Thumbnail   *DiscordEmbedThumbnail `json:"thumbnail,omitempty"`
-	Author      *DiscordEmbedAuthor    `json:"author,omitempty"`
-	Fields      []DiscordEmbedField    `json:"fields,omitempty"`
-}
-
-// WebhookPayload is the structure Discord expects for webhook requests with embeds
-type WebhookPayload struct {
-	Username  string         `json:"username,omitempty"`   // Optional: Override webhook username
-	AvatarURL string         `json:"avatar_url,omitempty"` // Optional: Override webhook avatar
-	Content   string         `json:"content,omitempty"`    // Optional: Message content outside embed
-	Embeds    []DiscordEmbed `json:"embeds"`
-}
 
 // Handler contains the API handlers dependencies
 type Handler struct {
@@ -120,7 +61,7 @@ func NewHandler(oauth *oauth2.Config, store string, db *db.DB, gemini *gemini.Cl
 
 // sendDiscordNotification sends an embed message to the configured Discord webhook.
 // It runs asynchronously to avoid blocking the main request flow.
-func (h *Handler) sendDiscordNotification(embed DiscordEmbed) {
+func (h *Handler) sendDiscordNotification(embed models.DiscordEmbed) {
 	go func() { // Run in a goroutine
 		if discordWebhookURL == "" {
 			// log.Println("WARN: Discord webhook URL not configured, skipping notification.")
@@ -135,9 +76,9 @@ func (h *Handler) sendDiscordNotification(embed DiscordEmbed) {
 		// Default bot name if not overriding
 		botUsername := "QuizBuilderAI Notifier"
 
-		payload := WebhookPayload{
+		payload := models.WebhookPayload{
 			Username: botUsername,
-			Embeds:   []DiscordEmbed{embed},
+			Embeds:   []models.DiscordEmbed{embed},
 		}
 
 		jsonPayload, err := json.Marshal(payload)
@@ -189,22 +130,22 @@ func (h *Handler) handleErrorAndNotify(c *gin.Context, userID uuid.UUID, statusC
 		})
 
 	// 3. Send Discord notification
-	errorEmbed := DiscordEmbed{
+	errorEmbed := models.DiscordEmbed{
 		Title:       fmt.Sprintf("🚨 API Error: %s", errorContext),             // Include context in title
 		Description: fmt.Sprintf("**Error Details:**\n```%s```", err.Error()), // Simplified description focusing on the error message
 		Color:       0xFF0000,                                                 // Bright Red
-		Fields:      []DiscordEmbedField{
+		Fields:      []models.DiscordEmbedField{
 			// Only include User ID field if it's valid
 		},
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 	// Add User ID field conditionally
 	if userID != uuid.Nil {
-		errorEmbed.Fields = append(errorEmbed.Fields, DiscordEmbedField{Name: "User ID", Value: fmt.Sprintf("`%s`", userID.String()), Inline: true})
+		errorEmbed.Fields = append(errorEmbed.Fields, models.DiscordEmbedField{Name: "User ID", Value: fmt.Sprintf("`%s`", userID.String()), Inline: true})
 	}
 	// Add Status and Path fields
-	errorEmbed.Fields = append(errorEmbed.Fields, DiscordEmbedField{Name: "HTTP Status", Value: fmt.Sprintf("%d", statusCode), Inline: true})
-	errorEmbed.Fields = append(errorEmbed.Fields, DiscordEmbedField{Name: "Path", Value: c.Request.URL.Path, Inline: false})
+	errorEmbed.Fields = append(errorEmbed.Fields, models.DiscordEmbedField{Name: "HTTP Status", Value: fmt.Sprintf("%d", statusCode), Inline: true})
+	errorEmbed.Fields = append(errorEmbed.Fields, models.DiscordEmbedField{Name: "Path", Value: c.Request.URL.Path, Inline: false})
 
 	h.sendDiscordNotification(errorEmbed)
 
@@ -262,7 +203,7 @@ func (h *Handler) CreateFeedbackHandler(c *gin.Context) {
 		h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, "Get User Profile from Context", errors.New("user profile not found in context"))
 		return
 	}
-	userProfile, ok := userProfileValue.(UserProfile) // Direct type assertion
+	userProfile, ok := userProfileValue.(models.UserProfile) // Direct type assertion
 	if !ok {
 		// This indicates a programming error (wrong type set in middleware or retrieved here)
 		log.Printf("ERROR: Invalid user profile type in context for CreateFeedbackHandler")
@@ -322,21 +263,21 @@ func (h *Handler) CreateFeedbackHandler(c *gin.Context) {
 		})
 
 	// 6. Send Discord Notification
-	discordEmbed := DiscordEmbed{
+	discordEmbed := models.DiscordEmbed{
 		Title: "📝 New Feedback Submitted",
 		Color: 0x00FF00, // Green
-		Fields: []DiscordEmbedField{
+		Fields: []models.DiscordEmbedField{
 			{Name: "User", Value: fmt.Sprintf("%s (`%s`)", userProfile.Name, userID.String()), Inline: false},
 			{Name: "Rating", Value: fmt.Sprintf("%d / 5", feedback.Rating.Int32), Inline: true},
 			{Name: "Content", Value: req.Content, Inline: false},
 		},
 		Timestamp: time.Now().Format(time.RFC3339),
-		Footer: &DiscordEmbedFooter{
+		Footer: &models.DiscordEmbedFooter{
 			Text: "Feedback submitted via QuizBuilderAI",
 		},
 	}
 	if userProfile.Picture != "" {
-		discordEmbed.Author = &DiscordEmbedAuthor{
+		discordEmbed.Author = &models.DiscordEmbedAuthor{
 			Name:    userProfile.Name,
 			IconURL: userProfile.Picture,
 		}

@@ -7,6 +7,7 @@ import (
 	"strings"  // Import strings package for TrimSuffix
 
 	"quizbuilderai/internal/api/handlers" // Import the new handlers package
+	"quizbuilderai/internal/models"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -49,7 +50,7 @@ func AuthRequired() gin.HandlerFunc {
 		session := sessions.Default(c)
 		profileValue := session.Get(handlers.ProfileSessionKey) // Use capitalized constant from handlers package
 
-		profileData, ok := profileValue.(handlers.UserProfile) // Use type from handlers package
+		profileData, ok := profileValue.(models.UserProfile) // Use type from handlers package
 		// Check if profile exists in session AND if the DatabaseID is valid (not Nil)
 		if !ok || profileValue == nil || profileData.DatabaseID == uuid.Nil {
 			log.Printf("WARN: AuthRequired failed - profile not found, invalid type, or missing DatabaseID in session.")

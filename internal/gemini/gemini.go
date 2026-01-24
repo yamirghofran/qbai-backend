@@ -21,21 +21,42 @@ import (
 	"google.golang.org/api/option"
 )
 
+const (
+	// MaxInlineSize is the maximum size for inline PDF data (20MB)
+	MaxInlineSize = 20 * 1024 * 1024
+	// ModelName is the Gemini model to use
+	ModelName = "gemini-2.5-flash-lite"
+)
+
+// Client wraps the Gemini client
+type Client struct {
+	client *genai.Client
+	model  *genai.GenerativeModel
+}
+
+// Struct to hold results from concurrent processing, including token counts
+type processResult struct {
+	quizResponse    *models.GeminiQuizResponse
+	promptTokens    int32
+	candidateTokens int32
+	totalTokens     int32
+}
+
 // BuildQuizPrompt generates a customized prompt based on optional parameters
 func BuildQuizPrompt(maxQuestions *int, difficulty *string, customPrompt *string) string {
 	basePrompt := `Generate a comprehensive multiple-choice quiz based on the content of these documents.
 
-Follow these requirements exactly:
+	Follow these requirements exactly:
 
-1. Create a descriptive title for the quiz that accurately reflects the main subject matter of the documents`
+	1. Create a descriptive title for the quiz that accurately reflects the main subject matter of the documents`
 
 	// Add max questions constraint if provided
 	if maxQuestions != nil && *maxQuestions > 0 {
 		basePrompt += fmt.Sprintf(`
-2. Create UP TO %d questions covering main topics and subtopics in the documents`, *maxQuestions)
+	2. Create UP TO %d questions covering main topics and subtopics in the documents`, *maxQuestions)
 	} else {
 		basePrompt += `
-2. Create questions covering ALL main topics and subtopics in the documents`
+	2. Create questions covering ALL main topics and subtopics in the documents`
 	}
 
 	basePrompt += `, ensuring no significant concept is omitted. Include the topic for each question (so that questions can be grouped by topic later.). DON'T reference the documents in the questions or options. The questions should be self-contained and understandable without needing to refer back to the documents.`
@@ -46,60 +67,60 @@ Follow these requirements exactly:
 	} else {
 		// Use default balanced distribution
 		basePrompt += `
-3. Include a balanced distribution of question types:
-   - Basic factual recall questions
-   - Comprehension questions that require understanding concepts
-   - Application/analysis questions that require:
-     * Applying principles to new scenarios
-     * Analyzing relationships between concepts
-     * Connecting ideas across different sections
-   - Synthesis/evaluation questions that require:
-     * Evaluating implications or consequences of key ideas
-     * Comparing competing perspectives or approaches
-     * Predicting outcomes based on document principles
-     * Identifying unstated assumptions underlying concepts`
+	3. Include a balanced distribution of question types:
+	   - Basic factual recall questions
+	   - Comprehension questions that require understanding concepts
+	   - Application/analysis questions that require:
+	     * Applying principles to new scenarios
+	     * Analyzing relationships between concepts
+	     * Connecting ideas across different sections
+	   - Synthesis/evaluation questions that require:
+	     * Evaluating implications or consequences of key ideas
+	     * Comparing competing perspectives or approaches
+	     * Predicting outcomes based on document principles
+	     * Identifying unstated assumptions underlying concepts`
 	}
 
 	// Add custom prompt if provided
 	if customPrompt != nil && *customPrompt != "" {
 		basePrompt += fmt.Sprintf(`
 
-SPECIAL INSTRUCTIONS FROM USER:
-%s`, *customPrompt)
+	SPECIAL INSTRUCTIONS FROM USER:
+	%s`, *customPrompt)
 	}
 
 	// Continue with the rest of the standard requirements
 	basePrompt += `
-4. For analytical questions, prioritize second and third-order thinking by asking about:
-   - "What would happen if..." scenarios
-   - Underlying mechanisms or reasons behind facts
-   - How concepts interact in complex systems
-   - Potential exceptions or limitations to stated principles
-5. Each question must have exactly 4 options with EXACTLY ONE correct answer
-6. For EACH answer option:
-   - Provide a concise "explanation" field detailing WHY the option is correct OR incorrect based on the source documents. Don't state "This is incorrect/correct". Just say the explanation. e.g."Gravity was discovered by Isaac Newton"
-   - Make incorrect options (distractors) highly plausible by using common misconceptions or partial understandings.
-   - Ensure all options have approximately the same length and level of detail.
-   - Maintain consistent grammar, style, and tone across all options.
-   - Avoid obvious wrong answers or "joke" options.
+	4. For analytical questions, prioritize second and third-order thinking by asking about:
+	   - "What would happen if..." scenarios
+	   - Underlying mechanisms or reasons behind facts
+	   - How concepts interact in complex systems
+	   - Potential exceptions or limitations to stated principles
+	5. Each question must have exactly 4 options with EXACTLY ONE correct answer
+	6. For EACH answer option:
+	   - Provide a concise "explanation" field detailing WHY the option is correct OR incorrect based on the source documents. Don't state "This is incorrect/correct". Just say the explanation. e.g."Gravity was discovered by Isaac Newton"
+	   - Make incorrect options (distractors) highly plausible by using common misconceptions or partial understandings.
+	   - Ensure all options have approximately the same length and level of detail.
+	   - Maintain consistent grammar, style, and tone across all options.
+	   - Avoid obvious wrong answers or "joke" options.
 
-Format your response as a JSON object with the following structure:
-{
-  "title": "Descriptive, Concise, General Quiz Title Based on Document Content",
-  "questions": [
-    {
-      "text": "Question text here?",
-      "topic": "the topic this question is about.",
-      "options": [
-        {"text": "Option A", "is_correct": false, "explanation": "Explanation why A is incorrect."},
-        {"text": "Option B", "is_correct": true, "explanation": "Explanation why B is correct."},
-        {"text": "Option C", "is_correct": false, "explanation": "Explanation why C is incorrect."},
-        {"text": "Option D", "is_correct": false, "explanation": "Explanation why D is incorrect."}
-      ]
-    },
-    ...more questions...
-  ]
-}`
+	Format your response as a JSON object with the following structure:
+	{
+	  "title": "Descriptive, Concise, General Quiz Title Based on Document Content",
+	  "questions": [
+	    {
+	      "text": "Question text here?",
+	      "topic": "the topic this question is about.",
+	      "options": [
+	        {"text": "Option A", "is_correct": false, "explanation": "Explanation why A is incorrect."},
+	        {"text": "Option B", "is_correct": true, "explanation": "Explanation why B is correct."},
+	        {"text": "Option C", "is_correct": false, "explanation": "Explanation why C is incorrect."},
+	        {"text": "Option D", "is_correct": false, "explanation": "Explanation why D is incorrect."}
+	      ]
+	    },
+	    ...more questions...
+	  ]
+	}`
 
 	return basePrompt
 }
@@ -161,27 +182,6 @@ func getDifficultyInstructions(difficulty string) string {
      * Predicting outcomes based on document principles
      * Identifying unstated assumptions underlying concepts`
 	}
-}
-
-const (
-	// MaxInlineSize is the maximum size for inline PDF data (20MB)
-	MaxInlineSize = 20 * 1024 * 1024
-	// ModelName is the Gemini model to use
-	ModelName = "gemini-2.5-flash-lite"
-)
-
-// Client wraps the Gemini client
-type Client struct {
-	client *genai.Client
-	model  *genai.GenerativeModel
-}
-
-// Struct to hold results from concurrent processing, including token counts
-type processResult struct {
-	quizResponse    *models.GeminiQuizResponse
-	promptTokens    int32
-	candidateTokens int32
-	totalTokens     int32
 }
 
 // NewClient creates a new Gemini client

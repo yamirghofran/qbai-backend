@@ -9,6 +9,7 @@ import (
 	"time" // Added for time.Now()
 
 	"quizbuilderai/internal/db"
+	"quizbuilderai/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"         // Added for user ID
@@ -44,7 +45,7 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 	userProfileValue, profileExists := c.Get("userProfile") // Use the key set by middleware
 
 	if profileExists {
-		profile, profileOk := userProfileValue.(UserProfile) // Check type assertion
+		profile, profileOk := userProfileValue.(models.UserProfile) // Check type assertion
 		if profileOk {
 			// Successfully retrieved and asserted profile
 			userName = profile.Name
@@ -108,10 +109,10 @@ func (h *Handler) HandleCreateQuizAttempt(c *gin.Context) {
 		map[string]interface{}{"quiz_id": quizID.String()})
 
 	// Send Discord notification for attempt start using Embed
-	startEmbed := DiscordEmbed{
+	startEmbed := models.DiscordEmbed{
 		Title: "🚀 Quiz Attempt Started",
 		Color: 0x2196F3, // Blue color
-		Fields: []DiscordEmbedField{
+		Fields: []models.DiscordEmbedField{
 			{Name: "Quiz Title", Value: dbQuiz.Title, Inline: true},
 			{Name: "Quiz ID", Value: fmt.Sprintf("`%s`", quizID.String()), Inline: true},
 			{Name: "Attempt ID", Value: fmt.Sprintf("`%s`", newAttempt.ID.String()), Inline: false},
@@ -356,7 +357,7 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 	userProfileValue, profileExists := c.Get("userProfile") // Use context key
 
 	if profileExists {
-		profile, profileOk := userProfileValue.(UserProfile)
+		profile, profileOk := userProfileValue.(models.UserProfile)
 		if profileOk {
 			userName = profile.Name
 			userEmail = profile.Email
@@ -445,10 +446,10 @@ func (h *Handler) HandleFinishQuizAttempt(c *gin.Context) {
 		})
 
 	// Send Discord notification for attempt finish using Embed
-	finishEmbed := DiscordEmbed{
+	finishEmbed := models.DiscordEmbed{
 		Title: "🏁 Quiz Attempt Finished",
 		Color: 0xFF9800, // Orange color
-		Fields: []DiscordEmbedField{
+		Fields: []models.DiscordEmbedField{
 			{Name: "Quiz Title", Value: quizTitle, Inline: true},
 			{Name: "Score", Value: fmt.Sprintf("%d", updatedAttempt.Score.Int32), Inline: true}, // Assuming score is out of 100 or similar, adjust if needed
 			{Name: "Attempt ID", Value: fmt.Sprintf("`%s`", updatedAttempt.ID.String()), Inline: false},

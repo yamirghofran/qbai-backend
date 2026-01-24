@@ -9,12 +9,14 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"slices"
 	"strconv" // Added for parsing integer parameters
 	"strings" // Added for string manipulation
 	"time"    // Added for response struct timestamps
 
 	"quizbuilderai/internal/db"
 	"quizbuilderai/internal/gemini"
+	"quizbuilderai/internal/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"         // Added for user ID
@@ -50,16 +52,6 @@ type ResponseQuizDetail struct {
 	CreatorPicture *string            `json:"creator_picture,omitempty"` // Add creator picture (optional)
 }
 
-// contains checks if a string is in a slice
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
 // Helper function to clean up temporary files
 func cleanupTempFile(path string) error {
 	return os.Remove(path)
@@ -93,7 +85,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	userProfileValue, profileExists := c.Get("userProfile") // Use the key set by middleware
 
 	if profileExists {
-		profile, profileOk := userProfileValue.(UserProfile) // Check type assertion
+		profile, profileOk := userProfileValue.(models.UserProfile) // Check type assertion
 		if profileOk {
 			// Successfully retrieved and asserted profile
 			userName = profile.Name
@@ -156,7 +148,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	if diffStr := c.Request.FormValue("difficulty"); diffStr != "" {
 		validDifficulties := []string{"easy", "medium", "hard", "extreme"}
 		diffLower := strings.ToLower(strings.TrimSpace(diffStr))
-		if !contains(validDifficulties, diffLower) {
+		if !slices.Contains(validDifficulties, diffLower) {
 			h.handleErrorAndNotify(c, userID, http.StatusBadRequest,
 				fmt.Sprintf("Invalid difficulty '%s'. Must be one of: %s",
 					diffStr, strings.Join(validDifficulties, ", ")),
@@ -618,10 +610,10 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		}) // Add token, duration, and customization details to the log
 
 	// Send Discord notification for quiz creation using Embed
-	quizEmbed := DiscordEmbed{
+	quizEmbed := models.DiscordEmbed{
 		Title: "📝 Quiz Created",
 		Color: 0x4CAF50, // Green color
-		Fields: []DiscordEmbedField{
+		Fields: []models.DiscordEmbedField{
 			{Name: "Title", Value: createdQuiz.Title, Inline: true},
 			{Name: "Questions", Value: fmt.Sprintf("%d", len(geminiResponse.Questions)), Inline: true},
 			{Name: "Materials", Value: fmt.Sprintf("%d", processedMaterialCount), Inline: true},
@@ -849,7 +841,7 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 	userProfileValue, profileExists := c.Get("userProfile") // Use context key
 
 	if profileExists {
-		profile, profileOk := userProfileValue.(UserProfile)
+		profile, profileOk := userProfileValue.(models.UserProfile)
 		if profileOk {
 			userName = profile.Name
 			userEmail = profile.Email
@@ -910,10 +902,10 @@ func (h *Handler) HandleDeleteQuiz(c *gin.Context) {
 		map[string]interface{}{"title": dbQuiz.Title}) // Include title from the fetched quiz
 
 	// Send Discord notification for quiz deletion using Embed
-	deleteEmbed := DiscordEmbed{
+	deleteEmbed := models.DiscordEmbed{
 		Title: "🗑️ Quiz Deleted",
 		Color: 0xF44336, // Red color
-		Fields: []DiscordEmbedField{
+		Fields: []models.DiscordEmbedField{
 			{Name: "Title", Value: dbQuiz.Title, Inline: true},
 			{Name: "Quiz ID", Value: fmt.Sprintf("`%s`", quizID.String()), Inline: true},
 			{Name: "Deleted By", Value: fmt.Sprintf("%s (%s)", userName, userEmail), Inline: false},

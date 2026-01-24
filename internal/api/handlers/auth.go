@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"quizbuilderai/internal/db"
+	"quizbuilderai/internal/models"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -124,10 +125,10 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 				map[string]interface{}{"email": dbUser.Email, "signup": true}) // Add signup flag
 
 			// Send Discord notification for signup using Embed
-			signupEmbed := DiscordEmbed{
+			signupEmbed := models.DiscordEmbed{
 				Title: "🎉 New Signup",
 				Color: 0x9C27B0, // Purple color
-				Fields: []DiscordEmbedField{
+				Fields: []models.DiscordEmbedField{
 					{Name: "Name", Value: dbUser.Name.String, Inline: true},
 					{Name: "Email", Value: dbUser.Email, Inline: true},
 					{Name: "User ID", Value: fmt.Sprintf("`%s`", dbUser.ID.String()), Inline: false},
@@ -155,10 +156,10 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 
 		// Send Discord notification for login (only if not a new user signup) using Embed
 		if !isNewUser {
-			loginEmbed := DiscordEmbed{
+			loginEmbed := models.DiscordEmbed{
 				Title: "✅ User Login",
 				Color: 0x00BCD4, // Cyan color
-				Fields: []DiscordEmbedField{
+				Fields: []models.DiscordEmbedField{
 					{Name: "Name", Value: dbUser.Name.String, Inline: true},
 					{Name: "Email", Value: dbUser.Email, Inline: true},
 					{Name: "User ID", Value: fmt.Sprintf("`%s`", dbUser.ID.String()), Inline: false},
@@ -189,7 +190,7 @@ func (h *Handler) HandleGoogleCallback(c *gin.Context) {
 
 	// Create the UserProfile directly from Google's userinfo, as our DB doesn't store all these fields.
 	// The dbUser variable now holds our internal user record (either newly created or existing).
-	profile := UserProfile{
+	profile := models.UserProfile{
 		DatabaseID:    dbUser.ID,   // Use the internal DB UUID
 		GoogleID:      userinfo.Id, // Google's ID
 		Email:         userinfo.Email,
@@ -228,7 +229,7 @@ func (h *Handler) HandleUserProfile(c *gin.Context) {
 	session := sessions.Default(c)
 	profileData := session.Get(ProfileSessionKey) // Use capitalized constant
 
-	profile, ok := profileData.(UserProfile)
+	profile, ok := profileData.(models.UserProfile)
 	if !ok || profileData == nil {
 		// Use Unauthorized status for API endpoints when auth fails
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated or session invalid"})
@@ -248,7 +249,7 @@ func (h *Handler) HandleLogout(c *gin.Context) {
 	userProfileValue, profileExists := c.Get("userProfile") // Use context key
 
 	if profileExists {
-		profile, profileOk := userProfileValue.(UserProfile)
+		profile, profileOk := userProfileValue.(models.UserProfile)
 		if profileOk {
 			userID = profile.DatabaseID
 			userName = profile.Name
@@ -300,10 +301,10 @@ func (h *Handler) HandleLogout(c *gin.Context) {
 			nil) // No specific details needed for logout
 
 		// Send Discord notification for logout using Embed
-		logoutEmbed := DiscordEmbed{
+		logoutEmbed := models.DiscordEmbed{
 			Title: "🚪 User Logout",
 			Color: 0x757575, // Grey color
-			Fields: []DiscordEmbedField{
+			Fields: []models.DiscordEmbedField{
 				{Name: "Name", Value: userName, Inline: true},
 				{Name: "Email", Value: userEmail, Inline: true},
 				{Name: "User ID", Value: fmt.Sprintf("`%s`", userID.String()), Inline: false},
@@ -324,7 +325,7 @@ func (h *Handler) HandleAuthStatus(c *gin.Context) {
 	session := sessions.Default(c)
 	profileData := session.Get(ProfileSessionKey) // Use capitalized constant
 
-	profile, ok := profileData.(UserProfile)
+	profile, ok := profileData.(models.UserProfile)
 	if !ok || profileData == nil {
 		// Not authenticated
 		c.JSON(http.StatusUnauthorized, gin.H{"authenticated": false})
