@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log" // Added for logging
+	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"quizbuilderai/internal/models"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -20,6 +19,61 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/api/option"
 )
+
+// quizResponseSchema returns the JSON schema for the quiz response structure
+// This enables Gemini's structured output feature for guaranteed schema-compliant JSON
+func quizResponseSchema() *genai.Schema {
+	return &genai.Schema{
+		Type: genai.TypeObject,
+		Properties: map[string]*genai.Schema{
+			"title": {
+				Type:        genai.TypeString,
+				Description: "Descriptive, concise quiz title based on the main subject matter of the documents",
+			},
+			"questions": {
+				Type:        genai.TypeArray,
+				Description: "List of quiz questions covering the document content",
+				Items: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"text": {
+							Type:        genai.TypeString,
+							Description: "The question text - should be self-contained and understandable without referring back to the documents",
+						},
+						"topic": {
+							Type:        genai.TypeString,
+							Description: "The topic this question is about, for grouping questions by topic",
+						},
+						"options": {
+							Type:        genai.TypeArray,
+							Description: "Exactly 4 answer options with exactly ONE correct answer",
+							Items: &genai.Schema{
+								Type: genai.TypeObject,
+								Properties: map[string]*genai.Schema{
+									"text": {
+										Type:        genai.TypeString,
+										Description: "The option text",
+									},
+									"is_correct": {
+										Type:        genai.TypeBoolean,
+										Description: "Whether this option is the correct answer (exactly one option per question should be true)",
+									},
+									"explanation": {
+										Type:        genai.TypeString,
+										Description: "Concise explanation of why this option is correct or incorrect, based on the source documents. State the fact, not 'this is correct/incorrect'",
+									},
+								},
+								Required: []string{"text", "is_correct", "explanation"},
+							},
+						},
+					},
+					Required: []string{"text", "topic", "options"},
+				},
+			},
+		},
+		Required: []string{"title", "questions"},
+	}
+}
 
 // BuildQuizPrompt generates a customized prompt based on optional parameters
 func BuildQuizPrompt(maxQuestions *int, difficulty *string, customPrompt *string) string {
@@ -81,25 +135,7 @@ SPECIAL INSTRUCTIONS FROM USER:
    - Make incorrect options (distractors) highly plausible by using common misconceptions or partial understandings.
    - Ensure all options have approximately the same length and level of detail.
    - Maintain consistent grammar, style, and tone across all options.
-   - Avoid obvious wrong answers or "joke" options.
-
-Format your response as a JSON object with the following structure:
-{
-  "title": "Descriptive, Concise, General Quiz Title Based on Document Content",
-  "questions": [
-    {
-      "text": "Question text here?",
-      "topic": "the topic this question is about.",
-      "options": [
-        {"text": "Option A", "is_correct": false, "explanation": "Explanation why A is incorrect."},
-        {"text": "Option B", "is_correct": true, "explanation": "Explanation why B is correct."},
-        {"text": "Option C", "is_correct": false, "explanation": "Explanation why C is incorrect."},
-        {"text": "Option D", "is_correct": false, "explanation": "Explanation why D is incorrect."}
-      ]
-    },
-    ...more questions...
-  ]
-}`
+   - Avoid obvious wrong answers or "joke" options.`
 
 	return basePrompt
 }
@@ -198,6 +234,7 @@ func NewClient() (*Client, error) {
 
 	model := client.GenerativeModel(ModelName)
 	model.ResponseMIMEType = "application/json"
+	model.ResponseSchema = quizResponseSchema()
 
 	return &Client{
 		client: client,
@@ -612,13 +649,13 @@ func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part, maxQuesti
 			continue
 		}
 
+		// Extract JSON text from response - structured output guarantees valid JSON
 		jsonText := ""
 		for _, part := range resp.Candidates[0].Content.Parts {
 			if text, ok := part.(genai.Text); ok {
 				jsonText += string(text)
 			}
 		}
-		jsonText = extractJSONFromText(jsonText)
 
 		if jsonText == "" {
 			lastErr = fmt.Errorf("no JSON content found in response (attempt %d)", attempts+1)
@@ -627,32 +664,12 @@ func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part, maxQuesti
 		}
 
 		var quizResponse models.GeminiQuizResponse
-		decoder := json.NewDecoder(strings.NewReader(jsonText))
-		decoder.DisallowUnknownFields()
-		decoder.UseNumber()
-
-		if err := decoder.Decode(&quizResponse); err != nil {
-			log.Printf("DEBUG: Raw JSON text received (attempt %d) before parse error: %s", attempts+1, jsonText)
-			fmt.Printf("Invalid JSON (attempt %d): %s\n", attempts+1, jsonText)
-
-			// Attempt to extract from partial JSON if it's a syntax error (like EOF)
-			if strings.Contains(err.Error(), "unexpected EOF") || strings.Contains(err.Error(), "syntax error") {
-				log.Printf("WARN: JSON parsing failed (attempt %d), attempting to extract from partial JSON: %v", attempts+1, err)
-				partialQuiz := extractValidQuestionsFromPartialJSON(jsonText)
-				if partialQuiz != nil && len(partialQuiz.Questions) > 0 {
-					log.Printf("INFO: Successfully extracted %d questions from partial JSON (attempt %d)", len(partialQuiz.Questions), attempts+1)
-					quizResponse = *partialQuiz // Use the partially recovered quiz
-				} else {
-					log.Printf("WARN: Could not extract any valid questions from partial JSON (attempt %d)", attempts+1)
-					lastErr = fmt.Errorf("failed to parse JSON response (attempt %d) and partial extraction failed: %w. Raw text logged", attempts+1, err)
-					time.Sleep(2 * time.Second)
-					continue
-				}
-			} else {
-				lastErr = fmt.Errorf("failed to parse JSON response (attempt %d): %w. Raw text logged", attempts+1, err)
-				time.Sleep(2 * time.Second)
-				continue
-			}
+		if err := json.Unmarshal([]byte(jsonText), &quizResponse); err != nil {
+			log.Printf("WARN: JSON parsing failed (attempt %d): %v", attempts+1, err)
+			log.Printf("DEBUG: Raw JSON text: %s", jsonText)
+			lastErr = fmt.Errorf("failed to parse JSON response (attempt %d): %w", attempts+1, err)
+			time.Sleep(2 * time.Second)
+			continue
 		}
 
 		if len(quizResponse.Questions) == 0 {
@@ -667,150 +684,6 @@ func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part, maxQuesti
 
 	// Return 0 tokens on final failure
 	return nil, 0, 0, 0, fmt.Errorf("failed to generate quiz after multiple attempts: %w", lastErr)
-}
-
-// extractValidQuestionsFromPartialJSON attempts to extract valid questions from a partial JSON response
-func extractValidQuestionsFromPartialJSON(jsonText string) *models.GeminiQuizResponse {
-	titlePattern := regexp.MustCompile(`"title"(?:\s*):(?:\s*)"([^"]*)"`)
-	titleMatch := titlePattern.FindStringSubmatch(jsonText)
-	var title string
-	if len(titleMatch) > 1 {
-		title = titleMatch[1]
-	}
-
-	questionPattern := regexp.MustCompile(`\{(?s)(?:\s*)"text"(?:\s*):(?:\s*)"([^"]*)"(?:\s*),(?:\s*)"topic"(?:\s*):(?:\s*)"([^"]*)"(?:\s*),(?:\s*)"options"(?:\s*):(?:\s*)\[(.*?)\](?:\s*)\}`)
-	matches := questionPattern.FindAllStringSubmatch(jsonText, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-
-	var validQuestions []models.GeminiQuestion
-	for _, match := range matches {
-		if len(match) < 4 {
-			continue
-		}
-		questionText := match[1]
-		topicText := match[2]
-		optionsText := match[3]
-
-		optionPattern := regexp.MustCompile(`\{(?s)(?:\s*)"text"(?:\s*):(?:\s*)"([^"]*)"(?:\s*),(?:\s*)"is_correct"(?:\s*):(?:\s*)(true|false)(?:\s*),(?:\s*)"explanation"(?:\s*):(?:\s*)"([^"]*)"(?:\s*)\}`)
-		optionMatches := optionPattern.FindAllStringSubmatch(optionsText, -1)
-		if len(optionMatches) != 4 {
-			continue
-		}
-
-		var options []models.GeminiOption
-		correctCount := 0
-		for _, optionMatch := range optionMatches {
-			if len(optionMatch) < 4 {
-				continue
-			}
-			optionText := optionMatch[1]
-			isCorrect := optionMatch[2] == "true"
-			explanationText := optionMatch[3]
-			if isCorrect {
-				correctCount++
-			}
-			options = append(options, models.GeminiOption{
-				Text:        optionText,
-				IsCorrect:   isCorrect,
-				Explanation: explanationText,
-			})
-		}
-
-		if correctCount != 1 || len(options) != 4 {
-			continue
-		}
-		validQuestions = append(validQuestions, models.GeminiQuestion{
-			Text:    questionText,
-			Topic:   topicText,
-			Options: options,
-		})
-	}
-
-	if len(validQuestions) == 0 {
-		return nil
-	}
-	return &models.GeminiQuizResponse{
-		Title:     title,
-		Questions: validQuestions,
-	}
-}
-
-// extractJSONFromText attempts to extract a JSON object from text that might contain
-// markdown or other formatting, and tries to recover from incomplete JSON
-func extractJSONFromText(text string) string {
-	jsonPattern := regexp.MustCompile(`(?s)\{.*"questions".*\}`)
-	matches := jsonPattern.FindString(text)
-	if matches != "" {
-		return matches
-	}
-
-	codeBlockPattern := regexp.MustCompile("```(?:json)?\\s*(\\{.*?\\})\\s*```")
-	if matches := codeBlockPattern.FindStringSubmatch(text); len(matches) > 1 {
-		return matches[1]
-	}
-
-	if strings.Contains(text, `{"questions"`) {
-		startIdx := strings.Index(text, `{"questions"`)
-		if startIdx >= 0 {
-			partialJSON := text[startIdx:]
-			openBraces := 0
-			closeBraces := 0
-			inString := false
-			escaped := false
-			for _, char := range partialJSON {
-				if escaped {
-					escaped = false
-					continue
-				}
-				if char == '\\' {
-					escaped = true
-					continue
-				}
-				if char == '"' && !escaped {
-					inString = !inString
-					continue
-				}
-				if !inString {
-					if char == '{' {
-						openBraces++
-					} else if char == '}' {
-						closeBraces++
-					}
-				}
-			}
-			if openBraces > closeBraces {
-				for i := 0; i < openBraces-closeBraces; i++ {
-					partialJSON += "}"
-				}
-			}
-			var test map[string]interface{}
-			if err := json.Unmarshal([]byte(partialJSON), &test); err == nil {
-				return partialJSON
-			}
-
-			questionsPattern := regexp.MustCompile(`"questions"\s*:\s*\[(.*?)\]`)
-			if matches := questionsPattern.FindStringSubmatch(partialJSON); len(matches) > 1 {
-				fixedJSON := `{"questions":[` + matches[1]
-				if !strings.HasSuffix(fixedJSON, "}]") {
-					lastBraceIdx := strings.LastIndex(fixedJSON, "}")
-					if lastBraceIdx > 0 {
-						fixedJSON = fixedJSON[:lastBraceIdx+1] + "]}"
-					} else {
-						fixedJSON += "]}"
-					}
-				} else {
-					fixedJSON += "}"
-				}
-				var test map[string]interface{}
-				if err := json.Unmarshal([]byte(fixedJSON), &test); err == nil {
-					return fixedJSON
-				}
-			}
-		}
-	}
-	return text
 }
 
 // limitQuizSize ensures the quiz response isn't too large by limiting the number of questions
