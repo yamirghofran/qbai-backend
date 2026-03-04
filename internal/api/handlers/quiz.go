@@ -14,7 +14,7 @@ import (
 	"time"    // Added for response struct timestamps
 
 	"quizbuilderai/internal/db"
-	"quizbuilderai/internal/gemini"
+	"quizbuilderai/internal/llm"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"         // Added for user ID
@@ -189,8 +189,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	}
 	var uploadedFiles []uploadedFileInfo // Holds info only for actual file uploads
 
-	// Slice to hold info about processed documents for Gemini (files + transcripts)
-	var documentFiles []gemini.DocumentFile
+	// Slice to hold info about processed documents for AI processing (files + transcripts)
+	var documentFiles []llm.DocumentFile
 	// Slice to hold paths of ALL temporary files (files + transcripts) for cleanup
 	var tempFilePaths []string
 
@@ -236,9 +236,9 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			return
 		}
 
-		// Save to temporary location using gemini helper
+		// Save to temporary location using llm helper
 		// Note: SaveTempFile expects []byte
-		tempPath, err := gemini.SaveTempFile(fileBytes, fileHeader.Filename)
+		tempPath, err := llm.SaveTempFile(fileBytes, fileHeader.Filename)
 		if err != nil {
 			// Use handleErrorAndNotify
 			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to save temporary file for %s", fileHeader.Filename), err)
@@ -255,8 +255,8 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		// Note: We no longer need the placeholder materialIDs slice here,
 		// as materials will be created and linked within the transaction directly.
 
-		// Prepare document for Gemini processing
-		documentFiles = append(documentFiles, gemini.DocumentFile{
+		// Prepare document for AI processing
+		documentFiles = append(documentFiles, llm.DocumentFile{
 			Name: fileHeader.Filename,
 			Path: tempPath,
 			Size: fileHeader.Size,
@@ -296,7 +296,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 
 		// Save transcript to temporary file
 		transcriptFilename := fmt.Sprintf("transcript_%s.txt", uuid.New().String()) // Unique temp name
-		tempPath, err := gemini.SaveTempFile([]byte(transcript), transcriptFilename)
+		tempPath, err := llm.SaveTempFile([]byte(transcript), transcriptFilename)
 		if err != nil {
 			// Use handleErrorAndNotify
 			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to save temporary transcript file for %s", url), err)
@@ -313,11 +313,11 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			return
 		}
 
-		// Note: Transcripts are processed for Gemini but NOT stored in uploadedFiles
+		// Note: Transcripts are processed for AI generation but NOT stored in uploadedFiles
 		// The material record for transcripts will be created in the transaction using the video URL.
 
-		// Prepare document for Gemini processing
-		documentFiles = append(documentFiles, gemini.DocumentFile{
+		// Prepare document for AI processing
+		documentFiles = append(documentFiles, llm.DocumentFile{
 			Name: transcriptFilename, // Use the temp filename
 			Path: tempPath,
 			Size: fileInfo.Size(),
@@ -333,29 +333,29 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		return
 	}
 
-	// 5. Call Gemini to generate the quiz
-	log.Printf("INFO: Calling Gemini to process %d documents for user %s (maxQ: %v, difficulty: %v, custom: %v)",
+	// 5. Call AI client to generate the quiz
+	log.Printf("INFO: Calling AI client to process %d documents for user %s (maxQ: %v, difficulty: %v, custom: %v)",
 		len(documentFiles), userID, maxQuestions, difficulty, customPrompt != nil)
 	// Receive token counts from ProcessDocuments
-	geminiResponse, promptTokens, candidateTokens, totalTokens, err := h.Gemini.ProcessDocuments(ctx, documentFiles, maxQuestions, difficulty, customPrompt)
+	llmResponse, promptTokens, candidateTokens, totalTokens, err := h.LLM.ProcessDocuments(ctx, documentFiles, maxQuestions, difficulty, customPrompt)
 	if err != nil {
 		// Use handleErrorAndNotify
-		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Gemini processing failed", err)
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "AI processing failed", err)
 		return
 	}
 
 	// Log received token counts (even if quiz generation failed partially)
-	log.Printf("INFO: Gemini Token Usage Reported: User=%s, Prompt=%d, Candidates=%d, Total=%d", userID, promptTokens, candidateTokens, totalTokens)
+	log.Printf("INFO: AI Token Usage Reported: User=%s, Prompt=%d, Candidates=%d, Total=%d", userID, promptTokens, candidateTokens, totalTokens)
 
-	if geminiResponse == nil || len(geminiResponse.Questions) == 0 {
+	if llmResponse == nil || len(llmResponse.Questions) == 0 {
 		// Use handleErrorAndNotify
-		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Gemini returned no questions", errors.New("quiz generation resulted in no questions"))
+		h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "AI returned no questions", errors.New("quiz generation resulted in no questions"))
 		return
 	}
 
-	log.Printf("INFO: Gemini generated quiz titled '%s' with %d questions for user %s", geminiResponse.Title, len(geminiResponse.Questions), userID)
+	log.Printf("INFO: AI generated quiz titled '%s' with %d questions for user %s", llmResponse.Title, len(llmResponse.Questions), userID)
 
-	// 6. Process Gemini Response &amp; DB Insertion (Transaction)
+	// 6. Process AI response & DB insertion (transaction)
 	var createdQuiz db.Quize // Variable to hold the created quiz
 
 	// Start transaction using the connection pool from the DB struct
@@ -402,7 +402,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	// Create the main Quiz record
 	quizParams := db.CreateQuizParams{
 		CreatorID: pgtype.UUID{Bytes: userID, Valid: true},
-		Title:     geminiResponse.Title,
+		Title:     llmResponse.Title,
 		// Description: pgtype.Text{String: "Generated by AI", Valid: true}, // Optional description
 		Visibility: db.QuizVisibilityPublic, // Default visibility set to public
 	}
@@ -494,17 +494,17 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 	// Process Questions and Answers
 	topicCache := make(map[string]uuid.UUID) // Cache found/created topic IDs
 
-	for _, geminiQuestion := range geminiResponse.Questions {
-		if geminiQuestion.Text == "" || len(geminiQuestion.Options) != 4 {
-			log.Printf("WARN: Skipping invalid question from Gemini: %+v", geminiQuestion)
+	for _, llmQuestion := range llmResponse.Questions {
+		if llmQuestion.Text == "" || len(llmQuestion.Options) != 4 {
+			log.Printf("WARN: Skipping invalid question from AI output: %+v", llmQuestion)
 			continue
 		}
 
 		// Get or Create Topic
-		topicTitle := geminiQuestion.Topic
+		topicTitle := llmQuestion.Topic
 		if topicTitle == "" {
-			topicTitle = "General" // Default topic if Gemini didn't provide one
-			log.Printf("WARN: Gemini question missing topic, using default: '%s'", topicTitle)
+			topicTitle = "General" // Default topic if AI didn't provide one
+			log.Printf("WARN: AI question missing topic, using default: '%s'", topicTitle)
 		}
 
 		topicID, found := topicCache[topicTitle]
@@ -548,7 +548,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		dbQuestion, err := qtx.CreateQuestion(ctx, db.CreateQuestionParams{
 			QuizID:   createdQuiz.ID,
 			TopicID:  topicID,
-			Question: geminiQuestion.Text,
+			Question: llmQuestion.Text,
 		})
 		if err != nil {
 			// Use handleErrorAndNotify
@@ -558,15 +558,15 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 
 		// Create Answers
 		correctAnswerCount := 0
-		for _, geminiOption := range geminiQuestion.Options {
-			if geminiOption.IsCorrect {
+		for _, llmOption := range llmQuestion.Options {
+			if llmOption.IsCorrect {
 				correctAnswerCount++
 			}
 			_, err = qtx.CreateAnswer(ctx, db.CreateAnswerParams{
 				QuestionID:  dbQuestion.ID,
-				Answer:      geminiOption.Text,
-				IsCorrect:   geminiOption.IsCorrect,
-				Explanation: pgtype.Text{String: geminiOption.Explanation, Valid: geminiOption.Explanation != ""}, // Add explanation from Gemini
+				Answer:      llmOption.Text,
+				IsCorrect:   llmOption.IsCorrect,
+				Explanation: pgtype.Text{String: llmOption.Explanation, Valid: llmOption.Explanation != ""}, // Add explanation from AI output
 			})
 			if err != nil {
 				// Use handleErrorAndNotify
@@ -575,12 +575,12 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 			}
 		}
 
-		// Validate that exactly one correct answer was provided by Gemini
+		// Validate that exactly one correct answer was provided by the AI output
 		if correctAnswerCount != 1 {
 			// Log the problematic question structure for debugging
 			// Use handleErrorAndNotify
-			errInvalidAnswers := fmt.Errorf("invalid number of correct answers (%d) for question: %s", correctAnswerCount, geminiQuestion.Text)
-			log.Printf("ERROR: %v. Rolling back. Question Details: %+v", errInvalidAnswers, geminiQuestion)
+			errInvalidAnswers := fmt.Errorf("invalid number of correct answers (%d) for question: %s", correctAnswerCount, llmQuestion.Text)
+			log.Printf("ERROR: %v. Rolling back. Question Details: %+v", errInvalidAnswers, llmQuestion)
 			h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, "Invalid question data received from AI", errInvalidAnswers)
 			return
 		}
@@ -594,7 +594,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		return
 	}
 
-	log.Printf("INFO: Successfully created quiz %s with %d questions for user %s", createdQuiz.ID, len(geminiResponse.Questions), userID)
+	log.Printf("INFO: Successfully created quiz %s with %d questions for user %s", createdQuiz.ID, len(llmResponse.Questions), userID)
 
 	// Calculate duration
 	duration := time.Since(startTime)
@@ -606,7 +606,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		pgtype.UUID{Bytes: createdQuiz.ID, Valid: true},
 		map[string]interface{}{
 			"title":             createdQuiz.Title,
-			"question_count":    len(geminiResponse.Questions),
+			"question_count":    len(llmResponse.Questions),
 			"material_count":    processedMaterialCount,
 			"prompt_tokens":     promptTokens,            // Add token info
 			"candidate_tokens":  candidateTokens,         // Add token info
@@ -623,7 +623,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 		Color: 0x4CAF50, // Green color
 		Fields: []DiscordEmbedField{
 			{Name: "Title", Value: createdQuiz.Title, Inline: true},
-			{Name: "Questions", Value: fmt.Sprintf("%d", len(geminiResponse.Questions)), Inline: true},
+			{Name: "Questions", Value: fmt.Sprintf("%d", len(llmResponse.Questions)), Inline: true},
 			{Name: "Materials", Value: fmt.Sprintf("%d", processedMaterialCount), Inline: true},
 			{Name: "Tokens Used", Value: fmt.Sprintf("%d", totalTokens), Inline: true},
 			{Name: "Time Taken", Value: fmt.Sprintf("%.2fs", duration.Seconds()), Inline: true},

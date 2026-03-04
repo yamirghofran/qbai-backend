@@ -1,11 +1,13 @@
-package gemini
+package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -15,67 +17,69 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/generative-ai-go/genai"
 	"github.com/google/uuid"
-	"google.golang.org/api/option"
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 )
 
-// quizResponseSchema returns the JSON schema for the quiz response structure
-// This enables Gemini's structured output feature for guaranteed schema-compliant JSON
-func quizResponseSchema() *genai.Schema {
-	return &genai.Schema{
-		Type: genai.TypeObject,
-		Properties: map[string]*genai.Schema{
-			"title": {
-				Type:        genai.TypeString,
-				Description: "Descriptive, concise quiz title based on the main subject matter of the documents",
+// quizResponseSchema returns the JSON schema for the quiz response structure.
+func quizResponseSchema() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"title": map[string]any{
+				"type":        "string",
+				"description": "Descriptive, concise quiz title based on the main subject matter of the documents",
 			},
-			"questions": {
-				Type:        genai.TypeArray,
-				Description: "List of quiz questions covering the document content",
-				Items: &genai.Schema{
-					Type: genai.TypeObject,
-					Properties: map[string]*genai.Schema{
-						"text": {
-							Type:        genai.TypeString,
-							Description: "The question text - should be self-contained and understandable without referring back to the documents",
+			"questions": map[string]any{
+				"type":        "array",
+				"description": "List of quiz questions covering the document content",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"text": map[string]any{
+							"type":        "string",
+							"description": "The question text - should be self-contained and understandable without referring back to the documents",
 						},
-						"topic": {
-							Type:        genai.TypeString,
-							Description: "The topic this question is about, for grouping questions by topic",
+						"topic": map[string]any{
+							"type":        "string",
+							"description": "The topic this question is about, for grouping questions by topic",
 						},
-						"options": {
-							Type:        genai.TypeArray,
-							Description: "Exactly 4 answer options with exactly ONE correct answer",
-							Items: &genai.Schema{
-								Type: genai.TypeObject,
-								Properties: map[string]*genai.Schema{
-									"text": {
-										Type:        genai.TypeString,
-										Description: "The option text",
+						"options": map[string]any{
+							"type":        "array",
+							"description": "Exactly 4 answer options with exactly ONE correct answer",
+							"items": map[string]any{
+								"type":                 "object",
+								"additionalProperties": false,
+								"properties": map[string]any{
+									"text": map[string]any{
+										"type":        "string",
+										"description": "The option text",
 									},
-									"is_correct": {
-										Type:        genai.TypeBoolean,
-										Description: "Whether this option is the correct answer (exactly one option per question should be true)",
+									"is_correct": map[string]any{
+										"type":        "boolean",
+										"description": "Whether this option is the correct answer (exactly one option per question should be true)",
 									},
-									"explanation": {
-										Type:        genai.TypeString,
-										Description: "Concise explanation of why this option is correct or incorrect, based on the source documents. State the fact, not 'this is correct/incorrect'",
+									"explanation": map[string]any{
+										"type":        "string",
+										"description": "Concise explanation of why this option is correct or incorrect, based on the source documents. State the fact, not 'this is correct/incorrect'",
 									},
 								},
-								Required: []string{"text", "is_correct", "explanation"},
+								"required": []string{"text", "is_correct", "explanation"},
 							},
 						},
 					},
-					Required: []string{"text", "topic", "options"},
+					"required": []string{"text", "topic", "options"},
 				},
 			},
 		},
-		Required: []string{"title", "questions"},
+		"required": []string{"title", "questions"},
 	}
 }
 
-// BuildQuizPrompt generates a customized prompt based on optional parameters
+// BuildQuizPrompt generates a customized prompt based on optional parameters.
 func BuildQuizPrompt(maxQuestions *int, difficulty *string, customPrompt *string) string {
 	basePrompt := `Generate a comprehensive multiple-choice quiz based on the content of these documents.
 
@@ -135,12 +139,13 @@ SPECIAL INSTRUCTIONS FROM USER:
    - Make incorrect options (distractors) highly plausible by using common misconceptions or partial understandings.
    - Ensure all options have approximately the same length and level of detail.
    - Maintain consistent grammar, style, and tone across all options.
-   - Avoid obvious wrong answers or "joke" options.`
+   - Avoid obvious wrong answers or "joke" options.
+7. Return ONLY a JSON object that matches the schema exactly.`
 
 	return basePrompt
 }
 
-// getDifficultyInstructions returns difficulty-specific instructions
+// getDifficultyInstructions returns difficulty-specific instructions.
 func getDifficultyInstructions(difficulty string) string {
 	switch strings.ToLower(difficulty) {
 	case "easy":
@@ -200,57 +205,83 @@ func getDifficultyInstructions(difficulty string) string {
 }
 
 const (
-	// MaxInlineSize is the maximum size for inline PDF data (20MB)
+	// MaxInlineSize is the threshold used to split large multi-file requests.
 	MaxInlineSize = 20 * 1024 * 1024
-	// ModelName is the Gemini model to use
-	ModelName = "gemini-3-flash-preview"
+
+	DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
+	DefaultModelName         = "google/gemini-3.1-flash-lite-preview"
+	DefaultPDFEngine         = "native"
 )
 
-// Client wraps the Gemini client
+// Client wraps the OpenAI Go client configured for OpenRouter.
 type Client struct {
-	client *genai.Client
-	model  *genai.GenerativeModel
+	client    openai.Client
+	model     string
+	pdfEngine string
 }
 
-// Struct to hold results from concurrent processing, including token counts
+// Struct to hold results from concurrent processing, including token counts.
 type processResult struct {
-	quizResponse    *models.GeminiQuizResponse
+	quizResponse    *models.LLMQuizResponse
 	promptTokens    int32
 	candidateTokens int32
 	totalTokens     int32
 }
 
-// NewClient creates a new Gemini client
+// NewClient creates a new OpenAI client configured for OpenRouter.
 func NewClient() (*Client, error) {
-	apiKey := os.Getenv("GEMINI_API_KEY")
+	apiKey := firstNonEmpty(
+		strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")),
+		strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
+	)
 	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY environment variable not set")
+		return nil, fmt.Errorf("OPENROUTER_API_KEY (or OPENAI_API_KEY) environment variable not set")
 	}
 
-	client, err := genai.NewClient(context.Background(), option.WithAPIKey(apiKey))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
+	baseURL := firstNonEmpty(
+		strings.TrimSpace(os.Getenv("OPENROUTER_BASE_URL")),
+		strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")),
+		DefaultOpenRouterBaseURL,
+	)
+
+	model := firstNonEmpty(
+		strings.TrimSpace(os.Getenv("OPENROUTER_MODEL")),
+		strings.TrimSpace(os.Getenv("OPENAI_MODEL")),
+		DefaultModelName,
+	)
+
+	pdfEngine := strings.TrimSpace(os.Getenv("OPENROUTER_PDF_ENGINE"))
+	if pdfEngine == "" {
+		pdfEngine = DefaultPDFEngine
 	}
 
-	model := client.GenerativeModel(ModelName)
-	model.ResponseMIMEType = "application/json"
-	model.ResponseSchema = quizResponseSchema()
+	opts := []option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseURL),
+	}
+
+	if referer := strings.TrimSpace(os.Getenv("OPENROUTER_HTTP_REFERER")); referer != "" {
+		opts = append(opts, option.WithHeader("HTTP-Referer", referer))
+	}
+	if appTitle := strings.TrimSpace(os.Getenv("OPENROUTER_X_TITLE")); appTitle != "" {
+		opts = append(opts, option.WithHeader("X-Title", appTitle))
+	}
+
+	client := openai.NewClient(opts...)
 
 	return &Client{
-		client: client,
-		model:  model,
+		client:    client,
+		model:     model,
+		pdfEngine: pdfEngine,
 	}, nil
 }
 
-// Close closes the Gemini client
-func (c *Client) Close() {
-	c.client.Close()
-}
+// Close is a no-op for the OpenAI client.
+func (c *Client) Close() {}
 
-// ProcessDocuments processes multiple document files and generates a quiz
-// It now processes files in chunks concurrently and returns aggregated token counts.
-// Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+// ProcessDocuments processes multiple document files and generates a quiz.
+// It processes files in chunks concurrently and returns aggregated token counts.
+func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.LLMQuizResponse, int32, int32, int32, error) {
 	// Add a timeout to the context
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
@@ -261,7 +292,7 @@ func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile, max
 
 	// Create channels for tasks, results, and errors
 	fileChunks := make(chan []DocumentFile, (len(files)+chunkSize-1)/chunkSize)
-	results := make(chan processResult, len(files)/chunkSize+1) // Use processResult struct
+	results := make(chan processResult, len(files)/chunkSize+1)
 	errChan := make(chan error, len(files)/chunkSize+1)
 	var wg sync.WaitGroup
 
@@ -281,46 +312,39 @@ func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile, max
 		go func() {
 			defer wg.Done()
 			for chunk := range fileChunks {
-				// Process each chunk of files, receive quiz and tokens
 				quizResponse, pTokens, cTokens, tTokens, err := c.processChunk(ctx, chunk, maxQuestions, difficulty, customPrompt)
 				if err != nil {
 					errChan <- fmt.Errorf("failed to process chunk: %w", err)
-					// Send zero tokens if chunk processing failed entirely before Gemini call
-					// If error happened during/after Gemini, processChunk should return counts
-					results <- processResult{nil, pTokens, cTokens, tTokens} // Send result even on error to aggregate tokens
-					return                                                   // Exit worker on first error
+					results <- processResult{nil, pTokens, cTokens, tTokens}
+					return
 				}
-				// Send result struct to results channel
 				results <- processResult{quizResponse, pTokens, cTokens, tTokens}
 			}
 		}()
 	}
 
-	// Close results channel when all workers are done
+	// Close channels when all workers are done
 	go func() {
 		wg.Wait()
 		close(results)
 		close(errChan)
 	}()
 
-	// Collect results and errors
-	var combinedQuizResponse *models.GeminiQuizResponse
+	var combinedQuizResponse *models.LLMQuizResponse
 	var titles []string
 	var aggPromptTokens int32
 	var aggCandidateTokens int32
 	var aggTotalTokens int32
 
 	for result := range results {
-		// Aggregate tokens from every result, even if quizResponse is nil
 		aggPromptTokens += result.promptTokens
 		aggCandidateTokens += result.candidateTokens
 		aggTotalTokens += result.totalTokens
 
 		if result.quizResponse == nil {
-			continue // Skip merging quiz data if it's nil
+			continue
 		}
 
-		// Collect titles for later processing
 		if result.quizResponse.Title != "" {
 			titles = append(titles, result.quizResponse.Title)
 		}
@@ -332,59 +356,45 @@ func (c *Client) ProcessDocuments(ctx context.Context, files []DocumentFile, max
 		}
 	}
 
-	// Check for errors after processing all results
 	if err := <-errChan; err != nil {
-		// Return aggregated tokens even if there was an error processing a chunk
 		return nil, aggPromptTokens, aggCandidateTokens, aggTotalTokens, err
 	}
 
-	// If we have multiple titles, generate a combined title
 	if len(titles) > 1 && combinedQuizResponse != nil {
 		if combinedQuizResponse.Title == "" && len(titles) > 0 {
 			combinedQuizResponse.Title = titles[0]
 		}
 	}
 
-	// If we still don't have a title, create a generic one
 	if combinedQuizResponse != nil && combinedQuizResponse.Title == "" {
 		combinedQuizResponse.Title = fmt.Sprintf("Quiz Generated on %s", time.Now().Format("January 2, 2006"))
 	}
 
-	// Return combined quiz and aggregated tokens
 	return combinedQuizResponse, aggPromptTokens, aggCandidateTokens, aggTotalTokens, nil
 }
 
-// processChunk processes a chunk of document files and generates a quiz response.
-// Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) processChunk(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+// processChunk processes a chunk of files and returns quiz + token usage.
+func (c *Client) processChunk(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.LLMQuizResponse, int32, int32, int32, error) {
 	totalSize := int64(0)
 	for _, file := range files {
 		totalSize += file.Size
 	}
 
 	if len(files) > 1 && totalSize > MaxInlineSize/2 {
-		// processFilesIndividually now returns token counts
 		return c.processFilesIndividually(ctx, files, maxQuestions, difficulty, customPrompt)
 	}
 
-	if totalSize > MaxInlineSize {
-		// processWithFileAPI now returns token counts
-		return c.processWithFileAPI(ctx, files, maxQuestions, difficulty, customPrompt)
-	}
-
-	// processInline now returns token counts
 	return c.processInline(ctx, files, maxQuestions, difficulty, customPrompt)
 }
 
-// processFilesIndividually processes files in small batches and combines the results
-// Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+// processFilesIndividually processes files in smaller batches and combines results.
+func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.LLMQuizResponse, int32, int32, int32, error) {
 	batches := createFileBatches(files, MaxInlineSize/4)
 
 	maxConcurrent := 15
 	sem := make(chan struct{}, maxConcurrent)
 
-	resultCh := make(chan processResult, len(batches)) // Use processResult struct
+	resultCh := make(chan processResult, len(batches))
 	errCh := make(chan error, len(batches))
 	var wg sync.WaitGroup
 
@@ -398,7 +408,6 @@ func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentF
 			batchCtx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 			defer cancel()
 
-			// Receive all 5 return values from processChunk
 			quizResponse, pTokens, cTokens, tTokens, err := c.processChunk(batchCtx, batchFiles, maxQuestions, difficulty, customPrompt)
 			if err != nil {
 				fileNames := make([]string, len(batchFiles))
@@ -406,11 +415,10 @@ func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentF
 					fileNames[i] = f.Name
 				}
 				errCh <- fmt.Errorf("failed to process batch %d (%s): %w", batchNum, strings.Join(fileNames, ", "), err)
-				// Send zero tokens if chunk processing failed entirely before Gemini call
-				resultCh <- processResult{nil, pTokens, cTokens, tTokens} // Send result even on error
+				resultCh <- processResult{nil, pTokens, cTokens, tTokens}
 				return
 			}
-			// Send the result struct containing quiz and tokens
+
 			resultCh <- processResult{quizResponse, pTokens, cTokens, tTokens}
 		}(i, batch)
 	}
@@ -421,7 +429,7 @@ func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentF
 		close(errCh)
 	}()
 
-	var allQuestions []models.GeminiQuestion
+	var allQuestions []models.LLMQuestion
 	var errs []string
 	var aggPromptTokens int32
 	var aggCandidateTokens int32
@@ -448,12 +456,10 @@ func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentF
 	}
 
 	if len(errs) > 0 {
-		// Return aggregated tokens even on error
 		return nil, aggPromptTokens, aggCandidateTokens, aggTotalTokens, fmt.Errorf("failed to process one or more batches: %s", strings.Join(errs, "; "))
 	}
 
 	if len(allQuestions) == 0 {
-		// Return aggregated tokens even if no questions generated
 		return nil, aggPromptTokens, aggCandidateTokens, aggTotalTokens, fmt.Errorf("no questions generated from any files")
 	}
 
@@ -466,11 +472,10 @@ func (c *Client) processFilesIndividually(ctx context.Context, files []DocumentF
 		allQuestions = allQuestions[:maxTotalQuestions]
 	}
 
-	// Return combined quiz and aggregated tokens
-	return &models.GeminiQuizResponse{Questions: allQuestions}, aggPromptTokens, aggCandidateTokens, aggTotalTokens, nil
+	return &models.LLMQuizResponse{Questions: allQuestions}, aggPromptTokens, aggCandidateTokens, aggTotalTokens, nil
 }
 
-// createFileBatches groups files into batches based on size
+// createFileBatches groups files into batches based on size.
 func createFileBatches(files []DocumentFile, maxBatchSize int64) [][]DocumentFile {
 	sortedFiles := make([]DocumentFile, len(files))
 	copy(sortedFiles, files)
@@ -503,12 +508,19 @@ func createFileBatches(files []DocumentFile, maxBatchSize int64) [][]DocumentFil
 	return batches
 }
 
-// Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) processInline(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
-	parts := []genai.Part{}
-	prompt := BuildQuizPrompt(maxQuestions, difficulty, customPrompt)
-	parts = append(parts, genai.Text(prompt))
+// processInline encodes files as data URLs and sends them in a chat completion request.
+func (c *Client) processInline(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.LLMQuizResponse, int32, int32, int32, error) {
+	if len(files) == 0 {
+		return nil, 0, 0, 0, fmt.Errorf("no files provided for processing")
+	}
 
+	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(files)+1)
+	prompt := BuildQuizPrompt(maxQuestions, difficulty, customPrompt)
+	parts = append(parts, openai.ChatCompletionContentPartUnionParam{
+		OfText: &openai.ChatCompletionContentPartTextParam{Text: prompt},
+	})
+
+	hasPDF := false
 	for _, file := range files {
 		data, err := os.ReadFile(file.Path)
 		if err != nil {
@@ -517,94 +529,30 @@ func (c *Client) processInline(ctx context.Context, files []DocumentFile, maxQue
 		if len(data) == 0 {
 			return nil, 0, 0, 0, fmt.Errorf("file %s is empty", file.Name)
 		}
+
 		mimeType := getMimeType(file.Name)
-		parts = append(parts, genai.Blob{MIMEType: mimeType, Data: data})
+		if strings.EqualFold(filepath.Ext(file.Name), ".pdf") {
+			hasPDF = true
+		}
+		dataURL := fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
+
+		parts = append(parts, openai.ChatCompletionContentPartUnionParam{
+			OfFile: &openai.ChatCompletionContentPartFileParam{
+				File: openai.ChatCompletionContentPartFileFileParam{
+					Filename: openai.String(file.Name),
+					FileData: openai.String(dataURL),
+				},
+			},
+		})
 	}
 
-	if len(files) == 0 {
-		return nil, 0, 0, 0, fmt.Errorf("no files provided for processing")
-	}
-	return c.generateQuiz(ctx, parts, maxQuestions, difficulty, customPrompt)
+	return c.generateQuiz(ctx, parts, hasPDF, maxQuestions, difficulty, customPrompt)
 }
 
-// Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) processWithFileAPI(ctx context.Context, files []DocumentFile, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
-	if len(files) == 0 {
-		return nil, 0, 0, 0, fmt.Errorf("no files provided for processing")
-	}
-
-	var wg sync.WaitGroup
-	fileDataCh := make(chan *genai.FileData, len(files))
-	errorCh := make(chan error, len(files))
-
-	for _, file := range files {
-		wg.Add(1)
-		go func(file DocumentFile) {
-			defer wg.Done()
-			fileInfo, err := os.Stat(file.Path)
-			if err != nil {
-				errorCh <- fmt.Errorf("failed to access file %s: %w", file.Name, err)
-				return
-			}
-			if fileInfo.Size() == 0 {
-				errorCh <- fmt.Errorf("file %s is empty", file.Name)
-				return
-			}
-			fileData, err := c.client.UploadFileFromPath(ctx, file.Path, nil)
-			if err != nil {
-				errorCh <- fmt.Errorf("failed to upload file %s: %w", file.Name, err)
-				return
-			}
-			fileDataCh <- &genai.FileData{URI: fileData.URI}
-		}(file)
-	}
-
-	wg.Wait()
-	close(fileDataCh)
-	close(errorCh)
-
-	for err := range errorCh {
-		if err != nil {
-			return nil, 0, 0, 0, err // Return 0 tokens on error
-		}
-	}
-
-	var fileDataList []*genai.FileData
-	for fileData := range fileDataCh {
-		fileDataList = append(fileDataList, fileData)
-	}
-
-	if len(fileDataList) == 0 {
-		return nil, 0, 0, 0, fmt.Errorf("no files were successfully uploaded")
-	}
-
-	prompt := BuildQuizPrompt(maxQuestions, difficulty, customPrompt)
-	parts := []genai.Part{genai.Text(prompt)}
-	for _, fileData := range fileDataList {
-		parts = append(parts, fileData)
-	}
-
-	quiz, pTokens, cTokens, tTokens, err := c.generateQuiz(ctx, parts, maxQuestions, difficulty, customPrompt)
-
-	// Clean up uploaded files
-	for _, fileData := range fileDataList {
-		if err := c.client.DeleteFile(ctx, fileData.URI); err != nil {
-			fmt.Printf("Warning: failed to delete file %s: %v\n", fileData.URI, err)
-		}
-	}
-	return quiz, pTokens, cTokens, tTokens, err
-}
-
-// generateQuiz sends the request to Gemini and parses the response
-// Returns quiz response, prompt tokens, candidate tokens, total tokens, error
-func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part, maxQuestions *int, difficulty *string, customPrompt *string) (*models.GeminiQuizResponse, int32, int32, int32, error) {
+// generateQuiz sends the request and parses the response.
+func (c *Client) generateQuiz(ctx context.Context, parts []openai.ChatCompletionContentPartUnionParam, hasPDF bool, maxQuestions *int, difficulty *string, customPrompt *string) (*models.LLMQuizResponse, int32, int32, int32, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
 	defer cancel()
-
-	c.model.SetTemperature(0.95)
-	c.model.SetTopK(40)
-	c.model.SetTopP(0.95)
-	c.model.SetMaxOutputTokens(int32(8192))
 
 	var lastErr error
 	var promptTokens int32
@@ -612,61 +560,88 @@ func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part, maxQuesti
 	var totalTokens int32
 
 	for attempts := 0; attempts < 3; attempts++ {
+		maxOutputTokens := int64(8192 - attempts*1000)
+		if maxOutputTokens < 1024 {
+			maxOutputTokens = 1024
+		}
+
+		attemptParts := append([]openai.ChatCompletionContentPartUnionParam(nil), parts...)
 		if attempts > 0 {
-			c.model.SetMaxOutputTokens(int32(4096 - attempts*1000))
 			maxQs := 50 - attempts*15
-			adjustedMax := &maxQs
-			limitedPrompt := BuildQuizPrompt(adjustedMax, difficulty, customPrompt)
-			for i, part := range parts {
-				if _, ok := part.(genai.Text); ok {
-					parts[i] = genai.Text(limitedPrompt)
-					break
-				}
+			if maxQs < 5 {
+				maxQs = 5
+			}
+			if maxQuestions != nil && *maxQuestions > 0 && *maxQuestions < maxQs {
+				maxQs = *maxQuestions
+			}
+			adjustedMax := maxQs
+			attemptParts[0] = openai.ChatCompletionContentPartUnionParam{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: BuildQuizPrompt(&adjustedMax, difficulty, customPrompt)},
 			}
 		}
 
-		resp, err := c.model.GenerateContent(ctx, parts...)
+		params := openai.ChatCompletionNewParams{
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.UserMessage(attemptParts),
+			},
+			Model:       openai.ChatModel(c.model),
+			Temperature: openai.Float(0.95),
+			TopP:        openai.Float(0.95),
+			MaxTokens:   openai.Int(maxOutputTokens),
+			ResponseFormat: openai.ChatCompletionNewParamsResponseFormatUnion{
+				OfJSONSchema: &openai.ResponseFormatJSONSchemaParam{
+					JSONSchema: openai.ResponseFormatJSONSchemaJSONSchemaParam{
+						Name:        "quiz_response",
+						Description: openai.String("Structured quiz response with title, questions, options, and explanations"),
+						Strict:      openai.Bool(true),
+						Schema:      quizResponseSchema(),
+					},
+				},
+			},
+		}
+
+		if hasPDF {
+			params.SetExtraFields(map[string]any{
+				"plugins": []map[string]any{
+					{
+						"id": "file-parser",
+						"pdf": map[string]any{
+							"engine": c.pdfEngine,
+						},
+					},
+				},
+			})
+		}
+
+		resp, err := c.client.Chat.Completions.New(ctx, params)
 		if err != nil {
 			lastErr = fmt.Errorf("failed to generate content (attempt %d): %w", attempts+1, err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// --- Token Usage ---
-		if resp.UsageMetadata != nil {
-			promptTokens = resp.UsageMetadata.PromptTokenCount
-			candidateTokens = resp.UsageMetadata.CandidatesTokenCount
-			totalTokens = resp.UsageMetadata.TotalTokenCount
-			log.Printf("INFO: Gemini Token Usage (Attempt %d): Prompt=%d, Candidates=%d, Total=%d", attempts+1, promptTokens, candidateTokens, totalTokens)
-		} else {
-			log.Printf("WARN: Gemini UsageMetadata was nil (Attempt %d)", attempts+1)
-		}
-		// --- End Token Usage ---
+		promptTokens = safeInt32(resp.Usage.PromptTokens)
+		candidateTokens = safeInt32(resp.Usage.CompletionTokens)
+		totalTokens = safeInt32(resp.Usage.TotalTokens)
+		log.Printf("INFO: LLM Token Usage (Attempt %d): Prompt=%d, Completion=%d, Total=%d", attempts+1, promptTokens, candidateTokens, totalTokens)
 
-		if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-			lastErr = fmt.Errorf("no content generated (attempt %d)", attempts+1)
+		if len(resp.Choices) == 0 {
+			lastErr = fmt.Errorf("no choices generated (attempt %d)", attempts+1)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// Extract JSON text from response - structured output guarantees valid JSON
-		jsonText := ""
-		for _, part := range resp.Candidates[0].Content.Parts {
-			if text, ok := part.(genai.Text); ok {
-				jsonText += string(text)
-			}
-		}
-
+		jsonText := strings.TrimSpace(resp.Choices[0].Message.Content)
 		if jsonText == "" {
 			lastErr = fmt.Errorf("no JSON content found in response (attempt %d)", attempts+1)
 			time.Sleep(2 * time.Second)
 			continue
 		}
+		jsonText = stripCodeFences(jsonText)
 
-		var quizResponse models.GeminiQuizResponse
+		var quizResponse models.LLMQuizResponse
 		if err := json.Unmarshal([]byte(jsonText), &quizResponse); err != nil {
 			log.Printf("WARN: JSON parsing failed (attempt %d): %v", attempts+1, err)
-			log.Printf("DEBUG: Raw JSON text: %s", jsonText)
 			lastErr = fmt.Errorf("failed to parse JSON response (attempt %d): %w", attempts+1, err)
 			time.Sleep(2 * time.Second)
 			continue
@@ -682,22 +657,54 @@ func (c *Client) generateQuiz(ctx context.Context, parts []genai.Part, maxQuesti
 		return &quizResponse, promptTokens, candidateTokens, totalTokens, nil
 	}
 
-	// Return 0 tokens on final failure
 	return nil, 0, 0, 0, fmt.Errorf("failed to generate quiz after multiple attempts: %w", lastErr)
 }
 
-// limitQuizSize ensures the quiz response isn't too large by limiting the number of questions
-func limitQuizSize(quizResponse *models.GeminiQuizResponse, maxQuestions int) *models.GeminiQuizResponse {
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func safeInt32(v int64) int32 {
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if v < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(v)
+}
+
+func stripCodeFences(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+	trimmed = strings.TrimPrefix(trimmed, "```")
+	trimmed = strings.TrimPrefix(trimmed, "json")
+	trimmed = strings.TrimSpace(trimmed)
+	if idx := strings.LastIndex(trimmed, "```"); idx >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
+	return trimmed
+}
+
+// limitQuizSize ensures the quiz response isn't too large by limiting the number of questions.
+func limitQuizSize(quizResponse *models.LLMQuizResponse, maxQuestions int) *models.LLMQuizResponse {
 	if quizResponse == nil || len(quizResponse.Questions) <= maxQuestions {
 		return quizResponse
 	}
-	limitedResponse := &models.GeminiQuizResponse{
+	limitedResponse := &models.LLMQuizResponse{
 		Questions: quizResponse.Questions[:maxQuestions],
 	}
 	return limitedResponse
 }
 
-// SaveTempFile saves a file to a temporary location
+// SaveTempFile saves a file to a temporary location.
 func SaveTempFile(data []byte, filename string) (string, error) {
 	tempDir := os.TempDir()
 	tempFile := filepath.Join(tempDir, uuid.New().String()+"_"+filename)
@@ -707,14 +714,14 @@ func SaveTempFile(data []byte, filename string) (string, error) {
 	return tempFile, nil
 }
 
-// DocumentFile represents a file to be processed
+// DocumentFile represents a file to be processed.
 type DocumentFile struct {
 	Name string
 	Path string
 	Size int64
 }
 
-// NewDocumentFile creates a new DocumentFile from a file
+// NewDocumentFile creates a new DocumentFile from a file.
 func NewDocumentFile(file io.Reader, filename string, size int64) (*DocumentFile, error) {
 	if size == 0 {
 		return nil, fmt.Errorf("file %s is empty", filename)
@@ -737,7 +744,7 @@ func NewDocumentFile(file io.Reader, filename string, size int64) (*DocumentFile
 	}, nil
 }
 
-// getMimeType returns the MIME type for a file based on its extension
+// getMimeType returns the MIME type for a file based on its extension.
 func getMimeType(filename string) string {
 	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {

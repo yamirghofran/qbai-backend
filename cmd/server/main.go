@@ -12,7 +12,7 @@ import (
 	"os/signal"
 	"quizbuilderai/internal/api"
 	"quizbuilderai/internal/db"
-	"quizbuilderai/internal/gemini"
+	"quizbuilderai/internal/llm"
 	"syscall"
 	"time"
 
@@ -105,12 +105,12 @@ func main() {
 	}
 	defer database.Close()
 
-	// Initialize Gemini client
-	geminiClient, err := gemini.NewClient()
+	// Initialize AI client
+	llmClient, err := llm.NewClient()
 	if err != nil {
-		log.Fatalf("Failed to initialize Gemini client: %v", err)
+		log.Fatalf("Failed to initialize AI client: %v", err)
 	}
-	defer geminiClient.Close()
+	defer llmClient.Close()
 
 	// Set up Gin router
 	router := gin.Default()
@@ -162,7 +162,7 @@ func main() {
 	router.Use(sessions.Sessions(storeName, store))
 
 	// Set up API handlers
-	handler := handlers.NewHandler(GoogleOauthConfig, storeName, database, geminiClient) // Use NewHandler from handlers package
+	handler := handlers.NewHandler(GoogleOauthConfig, storeName, database, llmClient) // Use NewHandler from handlers package
 	api.SetupRoutes(router, handler)
 
 	// Get port from environment variable or use default

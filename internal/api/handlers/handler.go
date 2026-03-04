@@ -14,7 +14,7 @@ import (
 	"time"     // Added for response struct timestamps &amp; Discord timeout
 
 	"quizbuilderai/internal/db"
-	"quizbuilderai/internal/gemini"
+	"quizbuilderai/internal/llm"
 	"quizbuilderai/internal/youtube"
 
 	"github.com/gin-gonic/gin"       // Added for gin.Context, gin.H
@@ -96,13 +96,13 @@ type Handler struct {
 	OauthConfig   *oauth2.Config
 	StoreName     string
 	DB            *db.DB
-	Gemini        *gemini.Client
+	LLM           *llm.Client
 	Youtube       *youtube.YoutubeTranscript
 	DiscordClient *http.Client // Added HTTP client for Discord
 }
 
 // NewHandler creates a new Handler
-func NewHandler(oauth *oauth2.Config, store string, db *db.DB, gemini *gemini.Client) *Handler {
+func NewHandler(oauth *oauth2.Config, store string, db *db.DB, llmClient *llm.Client) *Handler {
 	// Create a dedicated HTTP client for Discord with a timeout
 	discordClient := &http.Client{
 		Timeout: 5 * time.Second, // Set a 5-second timeout for Discord requests
@@ -112,7 +112,7 @@ func NewHandler(oauth *oauth2.Config, store string, db *db.DB, gemini *gemini.Cl
 		OauthConfig:   oauth,
 		StoreName:     store,
 		DB:            db,
-		Gemini:        gemini,
+		LLM:           llmClient,
 		Youtube:       youtube.New(),
 		DiscordClient: discordClient, // Initialize Discord client
 	}

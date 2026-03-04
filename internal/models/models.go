@@ -49,21 +49,21 @@ type PDFFile struct {
 	Size int64
 }
 
-// GeminiQuizResponse represents the structured JSON response from Gemini
-type GeminiQuizResponse struct {
-	Title     string           `json:"title"`
-	Questions []GeminiQuestion `json:"questions"`
+// LLMQuizResponse represents the structured JSON response from the LLM.
+type LLMQuizResponse struct {
+	Title     string        `json:"title"`
+	Questions []LLMQuestion `json:"questions"`
 }
 
-// GeminiQuestion represents a question in the Gemini response
-type GeminiQuestion struct {
-	Text    string         `json:"text"`
-	Topic   string         `json:"topic"` // Added field for topic assignment
-	Options []GeminiOption `json:"options"`
+// LLMQuestion represents a question in the LLM response.
+type LLMQuestion struct {
+	Text    string      `json:"text"`
+	Topic   string      `json:"topic"` // Added field for topic assignment
+	Options []LLMOption `json:"options"`
 }
 
-// GeminiOption represents an option in the Gemini response
-type GeminiOption struct {
+// LLMOption represents an option in the LLM response.
+type LLMOption struct {
 	Text        string `json:"text"`
 	IsCorrect   bool   `json:"is_correct"`
 	Explanation string `json:"explanation"` // Added explanation field
