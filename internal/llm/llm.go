@@ -209,8 +209,8 @@ const (
 	MaxInlineSize = 20 * 1024 * 1024
 
 	DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
-	DefaultModelName         = "google/gemini-3.1-flash-lite-preview"
-	DefaultPDFEngine         = "native"
+	DefaultModelName         = "moonshotai/kimi-k2.5"
+	DefaultPDFEngine         = "mistral-ocr"
 )
 
 // Client wraps the OpenAI Go client configured for OpenRouter.
