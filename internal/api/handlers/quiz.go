@@ -4,8 +4,10 @@ import (
 	"database/sql" // Added for sql.ErrNoRows
 	"errors"       // Import the standard errors package
 	"fmt"          // Added for error formatting
-	"io"           // Added for file operations
-	"log"          // Added for logging errors
+	"hash/fnv"
+	"io"  // Added for file operations
+	"log" // Added for logging errors
+	"math/rand"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -63,6 +65,24 @@ func contains(slice []string, item string) bool {
 // Helper function to clean up temporary files
 func cleanupTempFile(path string) error {
 	return os.Remove(path)
+}
+
+func deterministicShuffleSeed(attemptID uuid.UUID, questionID uuid.UUID) int64 {
+	hasher := fnv.New64a()
+	_, _ = hasher.Write(attemptID[:])
+	_, _ = hasher.Write(questionID[:])
+	return int64(hasher.Sum64())
+}
+
+func shuffleOptionsForAttempt(options []ResponseOption, attemptID uuid.UUID, questionID uuid.UUID) {
+	if len(options) < 2 {
+		return
+	}
+
+	rng := rand.New(rand.NewSource(deterministicShuffleSeed(attemptID, questionID)))
+	rng.Shuffle(len(options), func(i, j int) {
+		options[i], options[j] = options[j], options[i]
+	})
 }
 
 // HandleGenerateQuiz handles the request to generate a quiz from uploaded content
@@ -645,6 +665,7 @@ func (h *Handler) HandleGenerateQuiz(c *gin.Context) {
 func (h *Handler) HandleGetQuiz(c *gin.Context) {
 	ctx := c.Request.Context()
 	quizIDStr := c.Param("quizId")
+	attemptIDStr := strings.TrimSpace(c.Query("attemptId"))
 
 	// 1. Parse UUID
 	quizID, err := uuid.Parse(quizIDStr)
@@ -654,6 +675,17 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 		return
 	}
 	log.Printf("INFO: Handling request for quiz ID: %s", quizID)
+
+	var attemptID uuid.UUID
+	shouldShuffleOptions := false
+	if attemptIDStr != "" {
+		attemptID, err = uuid.Parse(attemptIDStr)
+		if err != nil {
+			h.handleErrorAndNotify(c, uuid.Nil, http.StatusBadRequest, fmt.Sprintf("Invalid attemptId query format '%s' for quiz %s", attemptIDStr, quizID), err)
+			return
+		}
+		shouldShuffleOptions = true
+	}
 
 	// 2. Fetch Quiz details including creator info
 	// GetQuizByID now returns db.GetQuizByIDRow which includes creator_name and creator_picture
@@ -667,6 +699,40 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 			h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, fmt.Sprintf("Failed to get quiz %s", quizID), err)
 		}
 		return
+	}
+
+	if shouldShuffleOptions {
+		userIDValue, exists := c.Get("userID")
+		if !exists {
+			h.handleErrorAndNotify(c, uuid.Nil, http.StatusUnauthorized, fmt.Sprintf("User ID not found in context for quiz %s attempt validation", quizID), errors.New("user not authenticated"))
+			return
+		}
+
+		userID, ok := userIDValue.(uuid.UUID)
+		if !ok {
+			h.handleErrorAndNotify(c, uuid.Nil, http.StatusInternalServerError, fmt.Sprintf("User ID in context is not UUID for quiz %s attempt validation", quizID), errors.New("invalid user ID type in context"))
+			return
+		}
+
+		dbAttempt, err := h.DB.Queries.GetQuizAttempt(ctx, attemptID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				h.handleErrorAndNotify(c, userID, http.StatusNotFound, fmt.Sprintf("Attempt %s not found for quiz %s option shuffle", attemptID, quizID), err)
+			} else {
+				h.handleErrorAndNotify(c, userID, http.StatusInternalServerError, fmt.Sprintf("Failed to validate attempt %s for quiz %s option shuffle", attemptID, quizID), err)
+			}
+			return
+		}
+
+		if dbAttempt.UserID != userID {
+			h.handleErrorAndNotify(c, userID, http.StatusForbidden, fmt.Sprintf("User %s attempted to use attempt %s owned by user %s when fetching quiz %s", userID, attemptID, dbAttempt.UserID, quizID), errors.New("you do not have permission to use this attempt"))
+			return
+		}
+
+		if dbAttempt.QuizID != quizID {
+			h.handleErrorAndNotify(c, userID, http.StatusBadRequest, fmt.Sprintf("Attempt %s belongs to quiz %s, not quiz %s", attemptID, dbAttempt.QuizID, quizID), errors.New("attempt does not belong to the requested quiz"))
+			return
+		}
 	}
 
 	// 3. Fetch Questions for the Quiz
@@ -702,6 +768,9 @@ func (h *Handler) HandleGetQuiz(c *gin.Context) {
 				IsCorrect:   dbA.IsCorrect,
 				Explanation: explanation, // Use the *string variable
 			})
+		}
+		if shouldShuffleOptions {
+			shuffleOptionsForAttempt(responseOptions, attemptID, dbQ.ID)
 		}
 
 		// Handle nullable TopicTitle
