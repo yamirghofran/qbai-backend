@@ -209,7 +209,7 @@ const (
 	MaxInlineSize = 20 * 1024 * 1024
 
 	DefaultOpenRouterBaseURL = "https://openrouter.ai/api/v1"
-	DefaultModelName         = "moonshotai/kimi-k2.5"
+	DefaultModelName         = "minimax/minimax-m2.5"
 	DefaultPDFEngine         = "mistral-ocr"
 )
 
